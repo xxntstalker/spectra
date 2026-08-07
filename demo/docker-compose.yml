@@ -1,0 +1,52 @@
+# Демо-стенд: портал, Postgres и семь фейковых сервисов.
+#
+#   docker compose -f demo/docker-compose.yml up --build
+#
+# Kubernetes здесь нет, поэтому реестр наполняется через
+# PORTAL_STATIC_SERVICES — тот же путь, что и для сервисов вне кластера.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: portal
+      POSTGRES_DB: portal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d portal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  demo:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile
+    command: ["-mutate-interval", "45s"]
+    ports:
+      - "7101-7107:7101-7107"
+
+  portal:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      demo:
+        condition: service_started
+    environment:
+      PORTAL_DATABASE_URL: postgres://portal:portal@postgres:5432/portal?sslmode=disable
+      PORTAL_K8S_ENABLED: "false"
+      PORTAL_PROXY_ENABLED: "true"
+      PORTAL_LOG_LEVEL: info
+      PORTAL_ADMIN_USER: admin
+      PORTAL_ADMIN_PASSWORD: admin
+      # Восьмой адрес намеренно мёртв — так выглядит недоступный хост.
+      PORTAL_STATIC_SERVICES: >-
+        http://demo:7101,http://demo:7102,http://demo:7103,http://demo:7104,
+        http://demo:7105,http://demo:7106,http://demo:7107,http://demo:7199
+    ports:
+      - "8080:8080"
+
+volumes: {}

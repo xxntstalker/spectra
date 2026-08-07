@@ -1,0 +1,149 @@
+# Граничные случаи. Половина должна попасть в реестр (и честно показать, что
+# спеки нет), половина — не попасть вовсе.
+---
+# ПОПАДАЕТ, статус «спека не найдена». Обычный веб-сервис без API — в кластере
+# таких много, и это нормальное состояние, а не проблема.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plain-website
+  namespace: demo-apis
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: plain-website } }
+  template:
+    metadata: { labels: { app: plain-website } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{ containerPort: 80 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plain-website
+  namespace: demo-apis
+spec:
+  selector: { app: plain-website }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plain-website
+  namespace: demo-apis
+spec:
+  rules:
+    - host: www.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: plain-website, port: { number: 80 } } }
+---
+# ПОПАДАЕТ, статус «недоступен». Service есть, а за ним никого — так выглядит
+# лежащий сервис, и это должно отличаться от «спеки нет».
+apiVersion: v1
+kind: Service
+metadata:
+  name: dead-backend
+  namespace: demo-apis
+spec:
+  selector: { app: nothing-here }
+  ports: [{ port: 80, targetPort: 7199 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dead-backend
+  namespace: demo-apis
+spec:
+  rules:
+    - host: dead.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: dead-backend, port: { number: 80 } } }
+---
+# НЕ ПОПАДАЕТ: cert-manager создаёт такие на время выпуска сертификата.
+# Они появляются и исчезают постоянно и API не отдают никогда.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cm-acme-http-solver-x7f2p
+  namespace: demo-apis
+spec:
+  rules:
+    - host: orders.demo.local
+      http:
+        paths:
+          - path: /.well-known/acme-challenge/tokenvalue
+            pathType: ImplementationSpecific
+            backend: { service: { name: orders, port: { number: 80 } } }
+---
+# НЕ ПОПАДАЕТ: владелец сервиса сам попросил его не трогать.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opted-out
+  namespace: demo-apis
+  annotations:
+    swagger-portal.io/skip: "true"
+spec:
+  rules:
+    - host: private.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: billing, port: { number: 80 } } }
+---
+# НЕ ПОПАДАЕТ: по wildcard-хосту невозможно сделать запрос.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wildcard
+  namespace: demo-apis
+spec:
+  rules:
+    - host: "*.demo.local"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: analytics, port: { number: 80 } } }
+---
+# НЕ ПОПАДАЕТ: namespace в списке исключённых по умолчанию.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: system-dashboard
+  namespace: kube-system
+spec:
+  rules:
+    - host: dashboard.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: kube-dns, port: { number: 53 } } }
+---
+# ПОПАДАЕТ с человеческим именем и своей группой: владелец сервиса может
+# управлять тем, как его сервис выглядит в портале, не трогая конфиг портала.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orders-annotated
+  namespace: demo-apis
+  annotations:
+    swagger-portal.io/name: "Заказы (аннотированный)"
+spec:
+  rules:
+    - host: orders-alt.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: orders, port: { number: 80 } } }

@@ -1,0 +1,194 @@
+# Демо-сервисы в кластере: один под отдаёт семь спек на разных портах,
+# у каждого — свой Service и свой Ingress. Плюс граничные случаи, которые
+# дискавери обязан обработать правильно.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-apis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-apis
+  namespace: demo-apis
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: demo-apis } }
+  template:
+    metadata: { labels: { app: demo-apis } }
+    spec:
+      containers:
+        - name: demo
+          image: api-portal-demo:dev
+          imagePullPolicy: Never
+          args: ["-mutate-interval", "60s"]
+          ports:
+            - { containerPort: 7101 }
+            - { containerPort: 7102 }
+            - { containerPort: 7103 }
+            - { containerPort: 7104 }
+            - { containerPort: 7105 }
+            - { containerPort: 7106 }
+            - { containerPort: 7107 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7101 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orders
+  namespace: demo-apis
+spec:
+  rules:
+    - host: orders.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: orders, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7102 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: billing
+  namespace: demo-apis
+spec:
+  rules:
+    - host: billing.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: billing, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7103 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: inventory
+  namespace: demo-apis
+spec:
+  rules:
+    - host: inventory.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: inventory, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7104 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: notifications
+  namespace: demo-apis
+spec:
+  rules:
+    - host: notifications.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: notifications, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-payments
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7105 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: legacy-payments
+  namespace: demo-apis
+spec:
+  rules:
+    - host: legacy-payments.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: legacy-payments, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7106 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: analytics
+  namespace: demo-apis
+spec:
+  rules:
+    - host: analytics.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: analytics, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warehouse
+  namespace: demo-apis
+spec:
+  selector: { app: demo-apis }
+  ports: [{ port: 80, targetPort: 7107 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: warehouse
+  namespace: demo-apis
+spec:
+  rules:
+    - host: warehouse.demo.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: warehouse, port: { number: 80 } } }

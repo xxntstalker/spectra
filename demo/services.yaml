@@ -1,0 +1,80 @@
+# Реестр демо-стенда: сервисы из demo/main.go на localhost.
+# Шаблон для своей установки — services.example.yaml в корне.
+
+listen: ":8080"
+database: ./data/demo.db
+
+poll:
+  # 30 секунд — для демо, чтобы изменения появлялись на глазах.
+  # В проде разумно 5m: сервисы отвечают 304 на неизменившуюся спеку,
+  # так что частый опрос дёшев, но и смысла в нём немного.
+  interval: 30s
+  timeout: 10s
+  budget: 2m
+  concurrency: 8
+
+defaults:
+  # Не считать сменой контракта то, что сервис переехал на другой адрес:
+  # servers/host/basePath выкидываются перед вычислением хэша.
+  ignoreServers: true
+  # "Try it out" из портала идёт через прокси портала.
+  proxy: true
+
+services:
+  - id: orders
+    name: Orders
+    group: Commerce
+    baseUrl: http://localhost:7101
+    tags: [core, public]
+
+  - id: billing
+    name: Billing
+    group: Commerce
+    baseUrl: http://localhost:7102
+    tags: [core]
+
+  - id: inventory
+    name: Inventory
+    group: Logistics
+    baseUrl: http://localhost:7103
+    tags: [core]
+
+  - id: warehouse
+    name: Warehouse
+    group: Logistics
+    baseUrl: http://localhost:7107
+
+  - id: notifications
+    name: Notifications
+    group: Platform
+    baseUrl: http://localhost:7104
+    tags: [platform]
+
+  - id: analytics
+    name: Analytics
+    group: Platform
+    baseUrl: http://localhost:7106
+
+  # Путь к спеке задан явно — так делается, когда автопоиск промахивается
+  # или когда не хочется тратить на перебор время при первом опросе.
+  - id: legacy-payments
+    name: Legacy Payments
+    group: Commerce
+    baseUrl: http://localhost:7105
+    specUrl: /v2/api-docs
+    tags: [legacy, deprecated]
+
+  # Ничего не слушает этот порт: так в портале выглядит недоступный сервис.
+  - id: shipping
+    name: Shipping
+    group: Logistics
+    baseUrl: http://localhost:7199
+
+  # Заголовки поддерживают подстановку из окружения — токены не хранятся
+  # в файле, который лежит в git:
+  #
+  # - id: partner-gateway
+  #   name: Partner Gateway
+  #   baseUrl: https://gateway.internal
+  #   headers:
+  #     Authorization: "Bearer ${GATEWAY_TOKEN}"

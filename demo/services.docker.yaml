@@ -1,0 +1,64 @@
+# Реестр для docker-compose: тот же демо-стенд, но по DNS-имени контейнера
+# вместо localhost. Для своей установки замените адреса на реальные и
+# смонтируйте этот файл в /etc/api-portal/services.yaml.
+
+listen: ":8080"
+database: /data/portal.db
+
+poll:
+  interval: 30s
+  timeout: 10s
+  budget: 2m
+  concurrency: 8
+
+defaults:
+  ignoreServers: true
+  proxy: true
+
+services:
+  - id: orders
+    name: Orders
+    group: Commerce
+    baseUrl: http://demo:7101
+    tags: [core, public]
+
+  - id: billing
+    name: Billing
+    group: Commerce
+    baseUrl: http://demo:7102
+    tags: [core]
+
+  - id: inventory
+    name: Inventory
+    group: Logistics
+    baseUrl: http://demo:7103
+    tags: [core]
+
+  - id: warehouse
+    name: Warehouse
+    group: Logistics
+    baseUrl: http://demo:7107
+
+  - id: notifications
+    name: Notifications
+    group: Platform
+    baseUrl: http://demo:7104
+    tags: [platform]
+
+  - id: analytics
+    name: Analytics
+    group: Platform
+    baseUrl: http://demo:7106
+
+  - id: legacy-payments
+    name: Legacy Payments
+    group: Commerce
+    baseUrl: http://demo:7105
+    specUrl: /v2/api-docs
+    tags: [legacy, deprecated]
+
+  # Порт, на котором никто не слушает: так выглядит недоступный сервис.
+  - id: shipping
+    name: Shipping
+    group: Logistics
+    baseUrl: http://demo:7199
