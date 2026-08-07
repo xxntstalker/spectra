@@ -194,6 +194,12 @@ func (c *Client) candidates(ing ingress) []candidate {
 
 			out = append(out, candidate{
 				Discovered: store.Discovered{
+					// Объявления владельца сервиса: он управляет тем, как его
+					// сервис попадает в Spectra, не трогая её конфигурацию.
+					// Путь в аннотации приводится к полному адресу — опрашивать
+					// Spectra будет по адресу, который знает сама.
+					SpecURL: absoluteSpecURL(baseURL, ing.Metadata.Annotations[annotationSpecURL]),
+					Group:   ing.Metadata.Annotations[annotationGroup],
 					// The key is the cluster address rather than the public
 					// host: a hostname can move between ingresses, while the
 					// backend service is what actually serves the API.
@@ -246,6 +252,26 @@ func pathSuffix(path string) string {
 		return p
 	}
 	return ""
+}
+
+// absoluteSpecURL resolves a spec address from an annotation against the
+// address the poller actually uses. Teams write a path; an absolute URL on a
+// different host is ignored rather than followed — Spectra runs inside the
+// cluster and must not be talked into fetching arbitrary addresses.
+func absoluteSpecURL(baseURL, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	target, err := base.Parse(raw)
+	if err != nil || target.Host != base.Host {
+		return ""
+	}
+	return target.String()
 }
 
 func defaultName(service, host string) string {

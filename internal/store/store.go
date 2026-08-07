@@ -59,6 +59,9 @@ const (
 	SourceProbe       = "probe"
 	SourceSwaggerHTML = "swagger-html"
 	SourceManual      = "manual"
+	// SourceAnnotation is an address declared on the Ingress by the team that
+	// owns the service.
+	SourceAnnotation = "annotation"
 )
 
 type Store struct{ pool *pgxpool.Pool }

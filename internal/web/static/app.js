@@ -29,6 +29,7 @@ const SOURCE_LABEL = {
   probe: 'найдена перебором путей',
   'swagger-html': 'найдена на странице документации',
   manual: 'задана вручную',
+  annotation: 'указана в аннотации Ingress',
 };
 
 const DETAIL_LABEL = {

@@ -14,6 +14,10 @@ type Discovered struct {
 	Namespace   string
 	IngressName string
 	Backend     string
+	// SpecURL and Group come from annotations on the Ingress: the team that
+	// owns a service declares these itself, next to its own manifests.
+	SpecURL string
+	Group   string
 }
 
 // SyncResult reports what a sweep changed.
@@ -52,12 +56,26 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 	for _, item := range items {
 		keys = append(keys, item.Key)
 
+		// A group named in an annotation is created on the fly.
+		var groupID *int64
+		if item.Group != "" {
+			var id int64
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO groups (name) VALUES ($1)
+				ON CONFLICT (name) DO UPDATE SET name = excluded.name
+				RETURNING id`, item.Group).Scan(&id); err != nil {
+				return res, err
+			}
+			groupID = &id
+		}
+
 		var inserted bool
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO services
 				(key, source, display_name, base_url, host, namespace, ingress_name, backend,
-				 first_seen_at, last_seen_at, present)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,TRUE)
+				 first_seen_at, last_seen_at, present, group_id, spec_url, spec_url_source)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,TRUE,$10,NULLIF($11,''),
+			        CASE WHEN $11 = '' THEN NULL ELSE $12 END)
 			ON CONFLICT (key) DO UPDATE SET
 				-- Address details follow the cluster; everything a person
 				-- edited is left alone.
@@ -68,10 +86,37 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 				backend      = excluded.backend,
 				last_seen_at = excluded.last_seen_at,
 				present      = TRUE,
+				-- The annotation only fills a gap: whatever a person set in
+				-- the UI stays theirs.
+				group_id = COALESCE(services.group_id, excluded.group_id),
+				spec_url = CASE
+					WHEN services.manual_spec_url IS NOT NULL AND services.manual_spec_url <> ''
+						THEN services.spec_url
+					WHEN excluded.spec_url IS NOT NULL THEN excluded.spec_url
+					ELSE services.spec_url END,
+				spec_url_source = CASE
+					WHEN services.manual_spec_url IS NOT NULL AND services.manual_spec_url <> ''
+						THEN services.spec_url_source
+					WHEN excluded.spec_url IS NOT NULL THEN excluded.spec_url_source
+					ELSE services.spec_url_source END,
+				-- Новый адрес из аннотации — это повод попробовать снова.
+				-- Без этого команда добавила бы аннотацию, а сервис остался бы
+				-- висеть выключенным до ручного опроса.
+				auto_probe = CASE
+					WHEN excluded.spec_url IS NOT NULL
+					 AND excluded.spec_url IS DISTINCT FROM services.spec_url
+						THEN TRUE
+					ELSE services.auto_probe END,
+				next_probe_at = CASE
+					WHEN excluded.spec_url IS NOT NULL
+					 AND excluded.spec_url IS DISTINCT FROM services.spec_url
+						THEN NULL
+					ELSE services.next_probe_at END,
 				updated_at   = now()
 			RETURNING (xmax = 0)`,
 			item.Key, source, item.DisplayName, item.BaseURL, item.Host,
-			item.Namespace, item.IngressName, item.Backend, now).
+			item.Namespace, item.IngressName, item.Backend, now,
+			groupID, item.SpecURL, SourceAnnotation).
 			Scan(&inserted); err != nil {
 			return res, err
 		}

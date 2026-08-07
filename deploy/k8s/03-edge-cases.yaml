@@ -147,3 +147,23 @@ spec:
           - path: /
             pathType: Prefix
             backend: { service: { name: orders, port: { number: 80 } } }
+---
+# ПОПАДАЕТ с группой и адресом спеки из аннотаций: владелец сервиса
+# управляет тем, как он выглядит в Spectra, не трогая её конфигурацию.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: warehouse-annotated
+  namespace: demo-apis
+  annotations:
+    spectra.io/name: "Склад"
+    spectra.io/group: "Логистика"
+    spectra.io/spec-url: /internal/openapi-v3
+spec:
+  rules:
+    - host: sklad.demo.local
+      http:
+        paths:
+          - path: /annotated
+            pathType: Prefix
+            backend: { service: { name: warehouse, port: { number: 80 } } }
