@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,7 +12,10 @@ import (
 
 // Version is one stored spec revision.
 type Version struct {
-	ID            int64     `json:"id"`
+	ID int64 `json:"id"`
+	// Revision is the number a person sees: 1, 2, 3 within one service. ID is
+	// the primary key and stays global, because changes reference it.
+	Revision      int       `json:"revision"`
 	ServiceID     int64     `json:"serviceId"`
 	Hash          string    `json:"hash"`
 	CapturedAt    time.Time `json:"capturedAt"`
@@ -24,19 +28,21 @@ type Version struct {
 
 func (s *Store) LatestVersion(ctx context.Context, serviceID int64) (*Version, error) {
 	return s.scanVersion(s.pool.QueryRow(ctx, `
-		SELECT id, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, spec
+		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, spec
 		FROM spec_versions WHERE service_id = $1 ORDER BY id DESC LIMIT 1`, serviceID))
 }
 
-func (s *Store) GetVersion(ctx context.Context, serviceID, versionID int64) (*Version, error) {
+// GetVersion looks a revision up by the number shown to the user, not by the
+// primary key: links people share should carry the number they can see.
+func (s *Store) GetVersion(ctx context.Context, serviceID int64, revision int) (*Version, error) {
 	return s.scanVersion(s.pool.QueryRow(ctx, `
-		SELECT id, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, spec
-		FROM spec_versions WHERE service_id = $1 AND id = $2`, serviceID, versionID))
+		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, spec
+		FROM spec_versions WHERE service_id = $1 AND revision = $2`, serviceID, revision))
 }
 
 func (s *Store) scanVersion(row pgx.Row) (*Version, error) {
 	var v Version
-	err := row.Scan(&v.ID, &v.ServiceID, &v.Hash, &v.CapturedAt, &v.Title,
+	err := row.Scan(&v.ID, &v.Revision, &v.ServiceID, &v.Hash, &v.CapturedAt, &v.Title,
 		&v.APIVersion, &v.SpecVersion, &v.EndpointCount, &v.Spec)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -49,7 +55,7 @@ func (s *Store) scanVersion(row pgx.Row) (*Version, error) {
 
 func (s *Store) ListVersions(ctx context.Context, serviceID int64, limit int) ([]Version, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count
+		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count
 		FROM spec_versions WHERE service_id = $1 ORDER BY id DESC LIMIT $2`, serviceID, limit)
 	if err != nil {
 		return nil, err
@@ -59,7 +65,7 @@ func (s *Store) ListVersions(ctx context.Context, serviceID int64, limit int) ([
 	out := []Version{}
 	for rows.Next() {
 		var v Version
-		if err := rows.Scan(&v.ID, &v.ServiceID, &v.Hash, &v.CapturedAt, &v.Title,
+		if err := rows.Scan(&v.ID, &v.Revision, &v.ServiceID, &v.Hash, &v.CapturedAt, &v.Title,
 			&v.APIVersion, &v.SpecVersion, &v.EndpointCount); err != nil {
 			return nil, err
 		}
@@ -68,15 +74,37 @@ func (s *Store) ListVersions(ctx context.Context, serviceID int64, limit int) ([
 	return out, rows.Err()
 }
 
+// InsertVersion assigns the next per-service revision number.
+//
+// Two polls of the same service overlapping is unlikely — sweeps are
+// serialised — but a manual probe can land next to a scheduled one. The unique
+// index catches that collision, and the retry picks the next free number
+// instead of dropping the revision.
 func (s *Store) InsertVersion(ctx context.Context, v *Version) (int64, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO spec_versions
-			(service_id, hash, captured_at, spec, title, api_version, spec_version, endpoint_count)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		v.ServiceID, v.Hash, v.CapturedAt, v.Spec, v.Title, v.APIVersion, v.SpecVersion, v.EndpointCount).
-		Scan(&id)
-	return id, err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		var id int64
+		var revision int
+		err := s.pool.QueryRow(ctx, `
+			INSERT INTO spec_versions
+				(service_id, revision, hash, captured_at, spec, title, api_version, spec_version, endpoint_count)
+			VALUES (
+				$1,
+				(SELECT COALESCE(max(revision), 0) + 1 FROM spec_versions WHERE service_id = $1),
+				$2,$3,$4,$5,$6,$7,$8)
+			RETURNING id, revision`,
+			v.ServiceID, v.Hash, v.CapturedAt, v.Spec, v.Title, v.APIVersion, v.SpecVersion, v.EndpointCount).
+			Scan(&id, &revision)
+		if err == nil {
+			v.Revision = revision
+			return id, nil
+		}
+		lastErr = err
+		if !strings.Contains(err.Error(), "idx_versions_revision") {
+			return 0, err
+		}
+	}
+	return 0, lastErr
 }
 
 // PruneVersions keeps the newest revisions and drops the changes that pointed
@@ -109,17 +137,20 @@ func (s *Store) PruneVersions(ctx context.Context, serviceID int64, keep int) (i
 
 // Change is a recorded transition between two revisions.
 type Change struct {
-	ID            int64           `json:"id"`
-	ServiceID     int64           `json:"serviceId"`
-	ServiceName   string          `json:"serviceName,omitempty"`
-	FromVersionID *int64          `json:"fromVersionId,omitempty"`
-	ToVersionID   int64           `json:"toVersionId"`
-	DetectedAt    time.Time       `json:"detectedAt"`
-	Breaking      bool            `json:"breaking"`
-	Added         int             `json:"added"`
-	Removed       int             `json:"removed"`
-	Modified      int             `json:"modified"`
-	Diff          json.RawMessage `json:"diff,omitempty"`
+	ID            int64  `json:"id"`
+	ServiceID     int64  `json:"serviceId"`
+	ServiceName   string `json:"serviceName,omitempty"`
+	FromVersionID *int64 `json:"fromVersionId,omitempty"`
+	ToVersionID   int64  `json:"toVersionId"`
+	// Human-facing numbers, scoped to the service.
+	FromRevision *int            `json:"fromRevision,omitempty"`
+	ToRevision   int             `json:"toRevision"`
+	DetectedAt   time.Time       `json:"detectedAt"`
+	Breaking     bool            `json:"breaking"`
+	Added        int             `json:"added"`
+	Removed      int             `json:"removed"`
+	Modified     int             `json:"modified"`
+	Diff         json.RawMessage `json:"diff,omitempty"`
 }
 
 func (s *Store) InsertChange(ctx context.Context, c *Change) error {
@@ -135,8 +166,12 @@ func (s *Store) InsertChange(ctx context.Context, c *Change) error {
 func (s *Store) ListChanges(ctx context.Context, serviceID int64, limit int) ([]Change, error) {
 	query := `
 		SELECT c.id, c.service_id, s.display_name, c.from_version_id, c.to_version_id,
+		       fv.revision, COALESCE(tv.revision, 0),
 		       c.detected_at, c.breaking, c.added, c.removed, c.modified, c.diff
-		FROM changes c JOIN services s ON s.id = c.service_id`
+		FROM changes c
+		JOIN services s ON s.id = c.service_id
+		LEFT JOIN spec_versions tv ON tv.id = c.to_version_id
+		LEFT JOIN spec_versions fv ON fv.id = c.from_version_id`
 	args := []any{limit}
 	if serviceID != 0 {
 		query += ` WHERE c.service_id = $2`
@@ -155,7 +190,8 @@ func (s *Store) ListChanges(ctx context.Context, serviceID int64, limit int) ([]
 		var c Change
 		var diff []byte
 		if err := rows.Scan(&c.ID, &c.ServiceID, &c.ServiceName, &c.FromVersionID,
-			&c.ToVersionID, &c.DetectedAt, &c.Breaking, &c.Added, &c.Removed,
+			&c.ToVersionID, &c.FromRevision, &c.ToRevision,
+			&c.DetectedAt, &c.Breaking, &c.Added, &c.Removed,
 			&c.Modified, &diff); err != nil {
 			return nil, err
 		}

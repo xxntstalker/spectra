@@ -29,7 +29,12 @@
       mount.dataset.url = specURL;
       mount.dataset.configuration = JSON.stringify({
         theme: 'default',
-        darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches,
+        darkMode: (function () {
+          var t = params.get('theme');
+          if (t === 'dark') return true;
+          if (t === 'light') return false;
+          return window.matchMedia('(prefers-color-scheme: dark)').matches;
+        })(),
         hideDownloadButton: false,
         // The portal already provides its own navigation between services.
         showSidebar: true

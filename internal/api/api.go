@@ -231,12 +231,14 @@ func (s *Server) getSpec(w http.ResponseWriter, r *http.Request) {
 		err     error
 	)
 	if raw := r.URL.Query().Get("version"); raw != "" {
-		id, convErr := strconv.ParseInt(raw, 10, 64)
-		if convErr != nil {
-			s.fail(w, http.StatusBadRequest, convErr)
+		// The number in the link is the one shown on the page: revisions are
+		// numbered within a service.
+		revision, convErr := strconv.Atoi(raw)
+		if convErr != nil || revision <= 0 {
+			s.fail(w, http.StatusBadRequest, errors.New("номер ревизии должен быть положительным числом"))
 			return
 		}
-		version, err = s.store.GetVersion(ctx, svc.ID, id)
+		version, err = s.store.GetVersion(ctx, svc.ID, revision)
 	} else {
 		version, err = s.store.LatestVersion(ctx, svc.ID)
 	}

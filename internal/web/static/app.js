@@ -124,6 +124,54 @@ function toast(message, kind = 'error') {
   setTimeout(() => box.remove(), 5000);
 }
 
+/* ---------- theme ---------- */
+
+// Three states rather than two: "как в системе" is a real preference, not the
+// absence of one, and a portal people keep open all day should follow the OS
+// when they switch it at dusk.
+const THEMES = [
+  { value: 'auto', icon: '◐', label: 'Тема: как в системе' },
+  { value: 'light', icon: '☀', label: 'Тема: светлая' },
+  { value: 'dark', icon: '☾', label: 'Тема: тёмная' },
+];
+
+function currentTheme() {
+  const stored = localStorage.getItem('spectra-theme');
+  return THEMES.some(t => t.value === stored) ? stored : 'auto';
+}
+
+function applyTheme(value) {
+  if (value === 'auto') {
+    delete document.documentElement.dataset.theme;
+    localStorage.removeItem('spectra-theme');
+  } else {
+    document.documentElement.dataset.theme = value;
+    localStorage.setItem('spectra-theme', value);
+  }
+  const theme = THEMES.find(t => t.value === value);
+  const button = el('theme');
+  if (button) {
+    button.textContent = theme.icon;
+    button.title = theme.label + ' — нажмите, чтобы переключить';
+  }
+  // The specification viewer lives in its own document and cannot see the
+  // attribute, so it is told through the URL.
+  const frame = document.querySelector('iframe.viewer');
+  if (frame) {
+    const url = new URL(frame.src, location.href);
+    url.searchParams.set('theme', value);
+    if (frame.src !== url.toString()) frame.src = url.toString();
+  }
+}
+
+function initTheme() {
+  applyTheme(currentTheme());
+  el('theme').addEventListener('click', () => {
+    const next = THEMES[(THEMES.findIndex(t => t.value === currentTheme()) + 1) % THEMES.length];
+    applyTheme(next.value);
+  });
+}
+
 /* ---------- auth ---------- */
 
 function renderAuthBox() {
@@ -358,7 +406,9 @@ function changeCard(change, showService) {
       <div class="card-head">
         ${showService
           ? `<a class="title" href="#/s/${change.serviceId}/history">${esc(change.serviceName)}</a>`
-          : `<span class="title">Ревизия #${change.toVersionId}</span>`}
+          : `<span class="title">Ревизия ${change.toRevision}${
+              change.fromRevision ? ` <span class="muted">(была ${change.fromRevision})</span>` : ''
+            }</span>`}
         ${change.breaking ? '<span class="badge breaking">ломающее</span>' : ''}
         <span class="counts">${counts.join('')}</span>
         <span class="when" title="${esc(absolute(change.detectedAt))}">${esc(ago(change.detectedAt))}</span>
@@ -487,7 +537,8 @@ function renderService() {
     return;
   }
   el('main').innerHTML = serviceHeader(svc, tab) +
-    `<iframe class="viewer" title="Спецификация" src="/viewer.html?service=${svc.id}"></iframe>`;
+    `<iframe class="viewer" title="Спецификация"
+             src="/viewer.html?service=${svc.id}&theme=${encodeURIComponent(currentTheme())}"></iframe>`;
   bindProbe(svc);
 }
 
@@ -559,12 +610,12 @@ async function renderHistory(svc) {
     const changes = (data.changes || []).map(c => changeCard(c, false)).join('');
     const versions = (data.versions || []).map(v => `
       <tr>
-        <td>#${v.id}</td>
+        <td>${v.revision}</td>
         <td title="${esc(absolute(v.capturedAt))}">${esc(ago(v.capturedAt))}</td>
         <td>${esc(v.apiVersion || '—')}</td>
         <td>${v.endpointCount}</td>
         <td class="hash">${esc(v.hash.slice(0, 12))}</td>
-        <td><a href="/viewer.html?service=${svc.id}&version=${v.id}" target="_blank" rel="noopener">открыть</a></td>
+        <td><a href="/viewer.html?service=${svc.id}&version=${v.revision}" target="_blank" rel="noopener">открыть</a></td>
       </tr>`).join('');
 
     el('history').innerHTML = `
@@ -573,7 +624,7 @@ async function renderHistory(svc) {
       <h2>Ревизии</h2>
       <p class="muted">Ревизия пишется только при смене хэша нормализованной спеки — опрос сам по себе её не создаёт.</p>
       <table class="versions">
-        <thead><tr><th>Ревизия</th><th>Зафиксирована</th><th>Версия API</th><th>Эндпоинтов</th><th>Хэш</th><th></th></tr></thead>
+        <thead><tr><th>№</th><th>Зафиксирована</th><th>Версия API</th><th>Эндпоинтов</th><th>Хэш</th><th></th></tr></thead>
         <tbody>${versions || '<tr><td colspan="6" class="muted">нет данных</td></tr>'}</tbody>
       </table>`;
   } catch (err) {
@@ -731,6 +782,8 @@ function render() {
 }
 
 async function boot() {
+  initTheme();
+
   el('filter').addEventListener('input', event => {
     state.filter = event.target.value;
     render();
