@@ -43,13 +43,13 @@ externalDocs:
 Живёт в репозитории сервиса рядом с кодом: обновляется тем же MR, что и код.
 
 **Слой 2. Аннотации на Ingress** — для сервисов, чья спека контактов не несёт.
-Механизм уже есть (`swagger-portal.io/name`, `/skip`), добавить ключи:
+Механизм уже есть (`spectra.io/name`, `/skip`), добавить ключи:
 
 ```yaml
-swagger-portal.io/team: profile
-swagger-portal.io/repo: https://gitlab.company.ru/backend/profile-service
-swagger-portal.io/owners: ivanov,petrov
-swagger-portal.io/chat: "#team-profile"
+spectra.io/team: profile
+spectra.io/repo: https://gitlab.company.ru/backend/profile-service
+spectra.io/owners: ivanov,petrov
+spectra.io/chat: "#team-profile"
 ```
 
 **Слой 3. Ручное заполнение в портале** — длинный хвост.
@@ -127,7 +127,7 @@ Google Sheets тут годится источником: «Опубликова
 
 **Тесты на `store`, `collector`, `api`.** Были при SQLite, удалены при переезде
 на Postgres — тестировали старый API. Покрыты `openapi`, `discovery` и `k8s`.
-Для остальных нужен Postgres в тестах: контейнер или `PORTAL_TEST_DATABASE_URL`
+Для остальных нужен Postgres в тестах: контейнер или `SPECTRA_TEST_DATABASE_URL`
 со скипом, если базы нет.
 
 **Уведомления о ломающих изменениях** (Slack, почта). Данные готовы: признак

@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: demo
-          image: api-portal-demo:dev
+          image: spectra-demo:dev
           imagePullPolicy: Never
           args: ["-mutate-interval", "60s"]
           ports:

@@ -1,5 +1,5 @@
-# Портал + Postgres. Реестр сервисов больше не файл — он в базе,
-# наполняется из Kubernetes (PORTAL_K8S_*) или из PORTAL_STATIC_SERVICES.
+# Spectra + Postgres. Реестр сервисов больше не файл — он в базе,
+# наполняется из Kubernetes (SPECTRA_K8S_*) или из SPECTRA_STATIC_SERVICES.
 #
 # Демо-стенд целиком: docker compose -f demo/docker-compose.yml up --build
 
@@ -7,31 +7,31 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: portal
-      POSTGRES_PASSWORD: portal
-      POSTGRES_DB: portal
+      POSTGRES_USER: spectra
+      POSTGRES_PASSWORD: spectra
+      POSTGRES_DB: spectra
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U portal -d portal"]
+      test: ["CMD-SHELL", "pg_isready -U spectra -d spectra"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  portal:
+  spectra:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      PORTAL_DATABASE_URL: postgres://portal:portal@postgres:5432/portal?sslmode=disable
-      PORTAL_LOG_LEVEL: info
+      SPECTRA_DATABASE_URL: postgres://spectra:spectra@postgres:5432/spectra?sslmode=disable
+      SPECTRA_LOG_LEVEL: info
       # Вне кластера дискавери из куба выключается само; включится в поде,
       # где смонтирован ServiceAccount.
-      PORTAL_K8S_ENABLED: "false"
+      SPECTRA_K8S_ENABLED: "false"
       # Прокси для Try it out. Учтите: у портала нет своей аутентификации,
       # а этот API теперь умеет писать — включайте только за SSO.
-      PORTAL_PROXY_ENABLED: "false"
+      SPECTRA_PROXY_ENABLED: "false"
     ports:
       - "8080:8080"
     restart: unless-stopped

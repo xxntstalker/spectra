@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"swaggeragg/internal/collector"
-	"swaggeragg/internal/config"
-	"swaggeragg/internal/discovery"
-	"swaggeragg/internal/openapi"
-	"swaggeragg/internal/store"
-	"swaggeragg/internal/web"
+	"spectra/internal/collector"
+	"spectra/internal/config"
+	"spectra/internal/discovery"
+	"spectra/internal/openapi"
+	"spectra/internal/store"
+	"spectra/internal/web"
 )
 
 type Server struct {

@@ -100,34 +100,34 @@ const serviceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 func Load() (*Config, error) {
 	c := &Config{
-		Listen:        env("PORTAL_LISTEN", ":8080"),
-		LogLevel:      env("PORTAL_LOG_LEVEL", "info"),
-		DatabaseURL:   firstEnv("PORTAL_DATABASE_URL", "DATABASE_URL"),
-		PollerEnabled: envBool("PORTAL_POLLER_ENABLED", true),
+		Listen:        env("SPECTRA_LISTEN", ":8080"),
+		LogLevel:      env("SPECTRA_LOG_LEVEL", "info"),
+		DatabaseURL:   firstEnv("SPECTRA_DATABASE_URL", "DATABASE_URL"),
+		PollerEnabled: envBool("SPECTRA_POLLER_ENABLED", true),
 		Kubernetes: Kubernetes{
-			Enabled:    envBool("PORTAL_K8S_ENABLED", inCluster()),
-			APIServer:  env("PORTAL_K8S_API_SERVER", apiServerFromEnv()),
-			Token:      env("PORTAL_K8S_TOKEN", ""),
-			CACertPath: env("PORTAL_K8S_CA_CERT", serviceAccountDir+"/ca.crt"),
-			Namespaces: envList("PORTAL_K8S_NAMESPACES", nil),
+			Enabled:    envBool("SPECTRA_K8S_ENABLED", inCluster()),
+			APIServer:  env("SPECTRA_K8S_API_SERVER", apiServerFromEnv()),
+			Token:      env("SPECTRA_K8S_TOKEN", ""),
+			CACertPath: env("SPECTRA_K8S_CA_CERT", serviceAccountDir+"/ca.crt"),
+			Namespaces: envList("SPECTRA_K8S_NAMESPACES", nil),
 			// The defaults are the namespaces that never host a documented
 			// API but do host ingresses — cert-manager's ACME solvers in
 			// particular would otherwise be probed on every sweep.
-			ExcludeNamespaces: envList("PORTAL_K8S_EXCLUDE_NAMESPACES",
+			ExcludeNamespaces: envList("SPECTRA_K8S_EXCLUDE_NAMESPACES",
 				[]string{"kube-system", "kube-public", "kube-node-lease", "cert-manager"}),
-			IngressClasses: envList("PORTAL_K8S_INGRESS_CLASSES", nil),
-			Target:         env("PORTAL_K8S_TARGET", TargetService),
-			SyncInterval:   envDuration("PORTAL_K8S_SYNC_INTERVAL", time.Hour),
+			IngressClasses: envList("SPECTRA_K8S_INGRESS_CLASSES", nil),
+			Target:         env("SPECTRA_K8S_TARGET", TargetService),
+			SyncInterval:   envDuration("SPECTRA_K8S_SYNC_INTERVAL", time.Hour),
 		},
 		HTTP: HTTP{
-			ProxyEnabled: envBool("PORTAL_PROXY_ENABLED", false),
-			UserAgent:    env("PORTAL_USER_AGENT", "swagger-portal/2.0"),
+			ProxyEnabled: envBool("SPECTRA_PROXY_ENABLED", false),
+			UserAgent:    env("SPECTRA_USER_AGENT", "spectra/2.0"),
 		},
 		Admin: Admin{
-			User:     env("PORTAL_ADMIN_USER", ""),
-			Password: env("PORTAL_ADMIN_PASSWORD", ""),
+			User:     env("SPECTRA_ADMIN_USER", ""),
+			Password: env("SPECTRA_ADMIN_PASSWORD", ""),
 		},
-		StaticServices: envList("PORTAL_STATIC_SERVICES", nil),
+		StaticServices: envList("SPECTRA_STATIC_SERVICES", nil),
 	}
 
 	if c.Kubernetes.Enabled && c.Kubernetes.Token == "" {
@@ -140,26 +140,26 @@ func Load() (*Config, error) {
 
 func (c *Config) validate() error {
 	if c.DatabaseURL == "" {
-		return fmt.Errorf("PORTAL_DATABASE_URL (or DATABASE_URL) is required, " +
+		return fmt.Errorf("SPECTRA_DATABASE_URL (or DATABASE_URL) is required, " +
 			"for example postgres://portal:secret@postgres:5432/portal?sslmode=disable")
 	}
 	if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
-		return fmt.Errorf("PORTAL_DATABASE_URL must be a postgres:// URL")
+		return fmt.Errorf("SPECTRA_DATABASE_URL must be a postgres:// URL")
 	}
 	switch c.Kubernetes.Target {
 	case TargetService, TargetIngress:
 	default:
-		return fmt.Errorf("PORTAL_K8S_TARGET must be %q or %q, got %q",
+		return fmt.Errorf("SPECTRA_K8S_TARGET must be %q or %q, got %q",
 			TargetService, TargetIngress, c.Kubernetes.Target)
 	}
 	if c.Kubernetes.Enabled {
 		if c.Kubernetes.APIServer == "" {
-			return fmt.Errorf("PORTAL_K8S_ENABLED is on but the API server address is unknown; " +
-				"set PORTAL_K8S_API_SERVER when running outside a cluster")
+			return fmt.Errorf("SPECTRA_K8S_ENABLED is on but the API server address is unknown; " +
+				"set SPECTRA_K8S_API_SERVER when running outside a cluster")
 		}
 		if c.Kubernetes.Token == "" {
-			return fmt.Errorf("PORTAL_K8S_ENABLED is on but no ServiceAccount token was found at %s/token; "+
-				"set PORTAL_K8S_TOKEN when running outside a cluster", serviceAccountDir)
+			return fmt.Errorf("SPECTRA_K8S_ENABLED is on but no ServiceAccount token was found at %s/token; "+
+				"set SPECTRA_K8S_TOKEN when running outside a cluster", serviceAccountDir)
 		}
 	}
 	return nil

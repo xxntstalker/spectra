@@ -40,7 +40,7 @@ func (s *Server) checkAdmin(w http.ResponseWriter, r *http.Request) bool {
 	// Failing open here would hand write access to everyone on the network.
 	if s.cfg.Admin.User == "" || s.cfg.Admin.Password == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error": "administration is disabled: set PORTAL_ADMIN_USER and PORTAL_ADMIN_PASSWORD",
+			"error": "administration is disabled: set SPECTRA_ADMIN_USER and SPECTRA_ADMIN_PASSWORD",
 		})
 		return false
 	}

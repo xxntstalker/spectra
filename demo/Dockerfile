@@ -1,6 +1,6 @@
 # Демо-стенд: фейковые сервисы, публикующие спеки разными способами.
 # Собирается из корня репозитория, потому что нужен go.mod:
-#   docker build -f demo/Dockerfile -t api-portal-demo .
+#   docker build -f demo/Dockerfile -t spectra-demo .
 FROM golang:1.25-alpine AS build
 
 WORKDIR /src

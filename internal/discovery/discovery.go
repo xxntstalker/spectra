@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"swaggeragg/internal/openapi"
+	"spectra/internal/openapi"
 )
 
 // candidatePaths are the conventional spec locations, ordered by how much of a

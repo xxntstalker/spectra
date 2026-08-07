@@ -1,4 +1,4 @@
-# Развёртывание API Portal — инструкция для DevOps
+# Развёртывание Spectra — инструкция для DevOps
 
 Портал читает список Ingress в кластере, ходит по найденным сервисам за их
 OpenAPI-спецификациями и показывает всё это одной страницей.
@@ -36,8 +36,8 @@ Ingress-контроллер не нужен: портал только чита
 Версия 13+. Одна база, один пользователь с правами на неё:
 
 ```sql
-CREATE USER portal WITH PASSWORD '...';
-CREATE DATABASE portal OWNER portal;
+CREATE USER spectra WITH PASSWORD '...';
+CREATE DATABASE spectra OWNER spectra;
 ```
 
 Схему портал создаст сам при старте (миграции под advisory-lock, одновременный
@@ -49,8 +49,8 @@ CREATE DATABASE portal OWNER portal;
 ### Секрет
 
 ```bash
-kubectl -n api-portal create secret generic portal-secrets \
-  --from-literal=database-url='postgres://portal:ПАРОЛЬ@postgres.db.svc:5432/portal?sslmode=require' \
+kubectl -n spectra create secret generic spectra-secrets \
+  --from-literal=database-url='postgres://spectra:ПАРОЛЬ@postgres.db.svc:5432/spectra?sslmode=require' \
   --from-literal=admin-user='admin' \
   --from-literal=admin-password='ДЛИННЫЙ_ПАРОЛЬ'
 ```
@@ -61,13 +61,13 @@ kubectl -n api-portal create secret generic portal-secrets \
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: api-portal
-  namespace: api-portal
+  name: spectra
+  namespace: spectra
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: api-portal-ingress-reader
+  name: spectra-ingress-reader
 rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
@@ -76,19 +76,19 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: api-portal-ingress-reader
+  name: spectra-ingress-reader
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: api-portal-ingress-reader
+  name: spectra-ingress-reader
 subjects:
   - kind: ServiceAccount
-    name: api-portal
-    namespace: api-portal
+    name: spectra
+    namespace: spectra
 ```
 
 Если ClusterRole не согласуют — сделайте `Role` + `RoleBinding` в нужных
-namespace и перечислите их в `PORTAL_K8S_NAMESPACES`.
+namespace и перечислите их в `SPECTRA_K8S_NAMESPACES`.
 
 **Учётные данные Kubernetes прописывать не нужно.** Токен и CA монтирует kubelet
 в `/var/run/secrets/kubernetes.io/serviceaccount`, адрес API-сервера приходит в
@@ -102,26 +102,26 @@ namespace и перечислите их в `PORTAL_K8S_NAMESPACES`.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-portal
-  namespace: api-portal
+  name: spectra
+  namespace: spectra
 spec:
   replicas: 1
   strategy: { type: Recreate }
-  selector: { matchLabels: { app: api-portal } }
+  selector: { matchLabels: { app: spectra } }
   template:
-    metadata: { labels: { app: api-portal } }
+    metadata: { labels: { app: spectra } }
     spec:
-      serviceAccountName: api-portal
+      serviceAccountName: spectra
       containers:
-        - name: portal
-          image: РЕГИСТРИ/api-portal:ВЕРСИЯ
+        - name: spectra
+          image: РЕГИСТРИ/spectra:ВЕРСИЯ
           env:
-            - name: PORTAL_DATABASE_URL
-              valueFrom: { secretKeyRef: { name: portal-secrets, key: database-url } }
-            - name: PORTAL_ADMIN_USER
-              valueFrom: { secretKeyRef: { name: portal-secrets, key: admin-user } }
-            - name: PORTAL_ADMIN_PASSWORD
-              valueFrom: { secretKeyRef: { name: portal-secrets, key: admin-password } }
+            - name: SPECTRA_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: spectra-secrets, key: database-url } }
+            - name: SPECTRA_ADMIN_USER
+              valueFrom: { secretKeyRef: { name: spectra-secrets, key: admin-user } }
+            - name: SPECTRA_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: spectra-secrets, key: admin-password } }
           ports: [{ containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
@@ -154,19 +154,19 @@ advisory-lock в Postgres. Без этого три реплики означа�
 
 | Переменная | По умолчанию | |
 |---|---|---|
-| `PORTAL_DATABASE_URL` | — | **обязательна** |
-| `PORTAL_ADMIN_USER` / `PORTAL_ADMIN_PASSWORD` | — | без них настройка недоступна целиком |
-| `PORTAL_LISTEN` | `:8080` | |
-| `PORTAL_LOG_LEVEL` | `info` | `debug` добавит лог запросов |
-| `PORTAL_K8S_ENABLED` | автоопределение | |
-| `PORTAL_K8S_TARGET` | `service` | `service` или `ingress` |
-| `PORTAL_K8S_NAMESPACES` | все | через запятую |
-| `PORTAL_K8S_EXCLUDE_NAMESPACES` | `kube-system,kube-public,kube-node-lease,cert-manager` | |
-| `PORTAL_K8S_INGRESS_CLASSES` | все | |
-| `PORTAL_K8S_SYNC_INTERVAL` | `1h` | как часто перечитывать Ingress |
-| `PORTAL_PROXY_ENABLED` | `false` | «Try it out» через портал |
-| `PORTAL_STATIC_SERVICES` | — | адреса вне кластера, через запятую |
-| `PORTAL_POLLER_ENABLED` | `true` | `false` — реплика только отдаёт интерфейс |
+| `SPECTRA_DATABASE_URL` | — | **обязательна** |
+| `SPECTRA_ADMIN_USER` / `SPECTRA_ADMIN_PASSWORD` | — | без них настройка недоступна целиком |
+| `SPECTRA_LISTEN` | `:8080` | |
+| `SPECTRA_LOG_LEVEL` | `info` | `debug` добавит лог запросов |
+| `SPECTRA_K8S_ENABLED` | автоопределение | |
+| `SPECTRA_K8S_TARGET` | `service` | `service` или `ingress` |
+| `SPECTRA_K8S_NAMESPACES` | все | через запятую |
+| `SPECTRA_K8S_EXCLUDE_NAMESPACES` | `kube-system,kube-public,kube-node-lease,cert-manager` | |
+| `SPECTRA_K8S_INGRESS_CLASSES` | все | |
+| `SPECTRA_K8S_SYNC_INTERVAL` | `1h` | как часто перечитывать Ingress |
+| `SPECTRA_PROXY_ENABLED` | `false` | «Try it out» через портал |
+| `SPECTRA_STATIC_SERVICES` | — | адреса вне кластера, через запятую |
+| `SPECTRA_POLLER_ENABLED` | `true` | `false` — реплика только отдаёт интерфейс |
 
 Интервал опроса, таймауты, ретенция и игнорируемые поля лежат в базе и меняются
 на странице настроек — их в окружении нет намеренно.
@@ -180,15 +180,15 @@ advisory-lock в Postgres. Без этого три реплики означа�
 имена backend-сервисов и тексты ошибок неавторизованным не показываются —
 вырезаются на сервере.
 
-**Всё, что меняет состояние, — под логином** из `PORTAL_ADMIN_*`. Туда же
+**Всё, что меняет состояние, — под логином** из `SPECTRA_ADMIN_*`. Туда же
 отнесён прокси: читать документацию можно всем, слать запросы в API через портал
 — нет.
 
 Логин передаётся Basic-авторизацией. **Ставьте портал за TLS.** Если
-`PORTAL_ADMIN_*` не заданы, администрирование выключено целиком.
+`SPECTRA_ADMIN_*` не заданы, администрирование выключено целиком.
 
 Рекомендуется дополнительно закрыть портал вашим SSO (oauth2-proxy,
-ingress-auth) — особенно если включаете `PORTAL_PROXY_ENABLED`.
+ingress-auth) — особенно если включаете `SPECTRA_PROXY_ENABLED`.
 
 **NetworkPolicy.** Порталу нужен egress к API-серверу, к Postgres и к
 опрашиваемым сервисам. Ingress — только от вашего ingress-контроллера.
@@ -198,14 +198,14 @@ ingress-auth) — особенно если включаете `PORTAL_PROXY_ENA
 ## 6. Как понять, что всё работает
 
 ```bash
-kubectl -n api-portal logs deploy/api-portal | grep -E 'listening|cluster sync'
+kubectl -n spectra logs deploy/spectra | grep -E 'listening|cluster sync'
 ```
 
 Ожидаемое:
 
 ```
 msg="kubernetes discovery enabled" apiServer=https://10.96.0.1:443 target=service
-msg="portal listening" addr=:8080
+msg="spectra listening" addr=:8080
 msg="cluster sync" found=42 new=42 gone=0
 ```
 
@@ -238,7 +238,7 @@ msg="cluster sync" found=42 new=42 gone=0
 ```yaml
 metadata:
   annotations:
-    swagger-portal.io/skip: "true"           # не индексировать этот сервис
-    swagger-portal.io/name: "Orders API"     # человеческое имя вместо имени Service
-    swagger-portal.io/spec-url: /v3/api-docs # если автопоиск промахивается
+    spectra.io/skip: "true"           # не индексировать этот сервис
+    spectra.io/name: "Orders API"     # человеческое имя вместо имени Service
+    spectra.io/spec-url: /v3/api-docs # если автопоиск промахивается
 ```

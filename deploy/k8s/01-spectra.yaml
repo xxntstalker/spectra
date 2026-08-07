@@ -7,16 +7,16 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: api-portal
+  name: spectra
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: portal-secrets
-  namespace: api-portal
+  name: spectra-secrets
+  namespace: spectra
 stringData:
   # Демо-значения. В настоящей установке — из вашего хранилища секретов.
-  database-url: postgres://portal:portal@postgres:5432/portal?sslmode=disable
+  database-url: postgres://spectra:spectra@postgres:5432/spectra?sslmode=disable
   admin-user: admin
   admin-password: admin
 ---
@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: api-portal
+  namespace: spectra
 spec:
   replicas: 1
   selector: { matchLabels: { app: postgres } }
@@ -35,13 +35,13 @@ spec:
         - name: postgres
           image: postgres:17-alpine
           env:
-            - { name: POSTGRES_USER, value: portal }
-            - { name: POSTGRES_PASSWORD, value: portal }
-            - { name: POSTGRES_DB, value: portal }
+            - { name: POSTGRES_USER, value: spectra }
+            - { name: POSTGRES_PASSWORD, value: spectra }
+            - { name: POSTGRES_DB, value: spectra }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports: [{ containerPort: 5432 }]
           readinessProbe:
-            exec: { command: ["pg_isready", "-U", "portal", "-d", "portal"] }
+            exec: { command: ["pg_isready", "-U", "spectra", "-d", "spectra"] }
             initialDelaySeconds: 3
             periodSeconds: 3
           volumeMounts:
@@ -54,7 +54,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: api-portal
+  namespace: spectra
 spec:
   selector: { app: postgres }
   ports: [{ port: 5432, targetPort: 5432 }]
@@ -62,15 +62,15 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: api-portal
-  namespace: api-portal
+  name: spectra
+  namespace: spectra
 ---
 # Единственное право, которое нужно порталу: прочитать список Ingress.
 # Ровно то же самое делает `kubectl get ing -A` — это один и тот же вызов API.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: api-portal-ingress-reader
+  name: spectra-ingress-reader
 rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
@@ -79,51 +79,51 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: api-portal-ingress-reader
+  name: spectra-ingress-reader
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: api-portal-ingress-reader
+  name: spectra-ingress-reader
 subjects:
   - kind: ServiceAccount
-    name: api-portal
-    namespace: api-portal
+    name: spectra
+    namespace: spectra
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-portal
-  namespace: api-portal
+  name: spectra
+  namespace: spectra
 spec:
   # Реплик может быть больше: опрашивать будет всё равно одна, её выбирает
   # advisory-lock в Postgres. Иначе три реплики означали бы тройную нагрузку
   # на каждый опрашиваемый сервис.
   replicas: 1
-  selector: { matchLabels: { app: api-portal } }
+  selector: { matchLabels: { app: spectra } }
   template:
-    metadata: { labels: { app: api-portal } }
+    metadata: { labels: { app: spectra } }
     spec:
-      serviceAccountName: api-portal
+      serviceAccountName: spectra
       containers:
-        - name: portal
-          image: api-portal:dev
+        - name: spectra
+          image: spectra:dev
           imagePullPolicy: Never # локально собранный образ OrbStack
           env:
-            - name: PORTAL_DATABASE_URL
-              valueFrom: { secretKeyRef: { name: portal-secrets, key: database-url } }
-            - name: PORTAL_ADMIN_USER
-              valueFrom: { secretKeyRef: { name: portal-secrets, key: admin-user } }
-            - name: PORTAL_ADMIN_PASSWORD
-              valueFrom: { secretKeyRef: { name: portal-secrets, key: admin-password } }
+            - name: SPECTRA_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: spectra-secrets, key: database-url } }
+            - name: SPECTRA_ADMIN_USER
+              valueFrom: { secretKeyRef: { name: spectra-secrets, key: admin-user } }
+            - name: SPECTRA_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: spectra-secrets, key: admin-password } }
             # Опрос ходит в backend-сервисы, а не в публичные хосты из Ingress:
             # изнутри кластера такой хост часто не резолвится или уходит на
             # внешний балансировщик и возвращается обратно.
-            - { name: PORTAL_K8S_TARGET, value: service }
-            - { name: PORTAL_K8S_SYNC_INTERVAL, value: 1m }
-            - { name: PORTAL_LOG_LEVEL, value: info }
+            - { name: SPECTRA_K8S_TARGET, value: service }
+            - { name: SPECTRA_K8S_SYNC_INTERVAL, value: 1m }
+            - { name: SPECTRA_LOG_LEVEL, value: info }
             # Демо-стенд отвечает мгновенно; в проде оставьте значения по
             # умолчанию (1h) — их всё равно можно менять на странице настроек.
-            - { name: PORTAL_PROXY_ENABLED, value: "true" }
+            - { name: SPECTRA_PROXY_ENABLED, value: "true" }
           ports: [{ containerPort: 8080 }]
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
@@ -146,8 +146,8 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: api-portal
-  namespace: api-portal
+  name: spectra
+  namespace: spectra
 spec:
-  selector: { app: api-portal }
+  selector: { app: spectra }
   ports: [{ port: 80, targetPort: 8080 }]

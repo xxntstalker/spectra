@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"swaggeragg/internal/config"
-	"swaggeragg/internal/store"
+	"spectra/internal/config"
+	"spectra/internal/store"
 )
 
 // fakeAPIServer stands in for the Kubernetes API. The portal speaks plain HTTP

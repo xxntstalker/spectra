@@ -22,7 +22,7 @@ func (s *Server) proxyHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.cfg.HTTP.ProxyEnabled {
 			writeJSON(w, http.StatusForbidden, map[string]any{
-				"error": "proxying is disabled (PORTAL_PROXY_ENABLED)",
+				"error": "proxying is disabled (SPECTRA_PROXY_ENABLED)",
 			})
 			return
 		}

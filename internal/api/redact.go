@@ -1,6 +1,6 @@
 package api
 
-import "swaggeragg/internal/store"
+import "spectra/internal/store"
 
 // Reading is open to everyone on the network, but "everyone" should not be
 // handed a map of the cluster.

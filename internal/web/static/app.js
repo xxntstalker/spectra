@@ -14,7 +14,7 @@ const state = {
   filter: '',
   stateFilter: '',
   route: { view: 'urls' },
-  auth: sessionStorage.getItem('portal-auth') || '',
+  auth: sessionStorage.getItem('spectra-auth') || '',
 };
 
 const PROBE_LABEL = {
@@ -75,7 +75,7 @@ async function api(path, options = {}) {
   if (res.status === 401) {
     // Stale or missing credentials: drop them so the next attempt asks again.
     state.auth = '';
-    sessionStorage.removeItem('portal-auth');
+    sessionStorage.removeItem('spectra-auth');
     renderAuthBox();
     throw new Error('Нужен вход администратора');
   }
@@ -145,7 +145,7 @@ function renderAuthBox() {
       state.auth = btoa(`${user}:${password}`);
       try {
         await api('/api/settings'); // cheapest endpoint that requires the login
-        sessionStorage.setItem('portal-auth', state.auth);
+        sessionStorage.setItem('spectra-auth', state.auth);
         await reload();
       } catch (err) {
         toast(err.message);
@@ -156,7 +156,7 @@ function renderAuthBox() {
   if (logout) {
     logout.addEventListener('click', () => {
       state.auth = '';
-      sessionStorage.removeItem('portal-auth');
+      sessionStorage.removeItem('spectra-auth');
       reload();
     });
   }

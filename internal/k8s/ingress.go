@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"swaggeragg/internal/config"
-	"swaggeragg/internal/store"
+	"spectra/internal/config"
+	"spectra/internal/store"
 )
 
 type Client struct {
@@ -87,10 +87,10 @@ type ingress struct {
 // Annotations a service owner can put on an Ingress to steer the portal
 // without anyone touching the portal's own configuration.
 const (
-	annotationSkip    = "swagger-portal.io/skip"
-	annotationSpecURL = "swagger-portal.io/spec-url"
-	annotationName    = "swagger-portal.io/name"
-	annotationGroup   = "swagger-portal.io/group"
+	annotationSkip    = "spectra.io/skip"
+	annotationSpecURL = "spectra.io/spec-url"
+	annotationName    = "spectra.io/name"
+	annotationGroup   = "spectra.io/group"
 )
 
 // Discover lists ingresses and turns them into registry candidates.

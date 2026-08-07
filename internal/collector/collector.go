@@ -18,11 +18,11 @@ import (
 	"sync"
 	"time"
 
-	"swaggeragg/internal/config"
-	"swaggeragg/internal/discovery"
-	"swaggeragg/internal/k8s"
-	"swaggeragg/internal/openapi"
-	"swaggeragg/internal/store"
+	"spectra/internal/config"
+	"spectra/internal/discovery"
+	"spectra/internal/k8s"
+	"spectra/internal/openapi"
+	"spectra/internal/store"
 )
 
 type Collector struct {
@@ -163,8 +163,11 @@ func (c *Collector) syncStatic(ctx context.Context) {
 			continue
 		}
 		items = append(items, store.Discovered{
-			Key:         "static:" + u.Host + u.Path,
-			DisplayName: u.Hostname(),
+			Key: "static:" + u.Host + u.Path,
+			// Host and port, not just the hostname: several services behind
+			// one host on different ports would otherwise all be called the
+			// same thing.
+			DisplayName: u.Host + u.Path,
 			BaseURL:     u.String(),
 			Host:        u.Host,
 		})

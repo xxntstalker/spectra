@@ -1,4 +1,4 @@
-// Command portal aggregates the OpenAPI specs of the services running in a
+// Command spectra aggregates the OpenAPI specs of the services running in a
 // cluster into one place.
 package main
 
@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"swaggeragg/internal/api"
-	"swaggeragg/internal/collector"
-	"swaggeragg/internal/config"
-	"swaggeragg/internal/k8s"
-	"swaggeragg/internal/store"
+	"spectra/internal/api"
+	"spectra/internal/collector"
+	"spectra/internal/config"
+	"spectra/internal/k8s"
+	"spectra/internal/store"
 )
 
 func main() {
@@ -65,7 +65,7 @@ func run() error {
 			"syncInterval", cfg.Kubernetes.SyncInterval)
 	} else {
 		log.Warn("kubernetes discovery is off; the registry will stay empty " +
-			"unless services are added another way (PORTAL_K8S_ENABLED)")
+			"unless services are added another way (SPECTRA_K8S_ENABLED)")
 	}
 
 	col := collector.New(cfg, st, kube, log)
@@ -79,7 +79,7 @@ func run() error {
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("portal listening", "addr", cfg.Listen, "proxy", cfg.HTTP.ProxyEnabled)
+		log.Info("spectra listening", "addr", cfg.Listen, "proxy", cfg.HTTP.ProxyEnabled)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}
@@ -116,7 +116,7 @@ func openStore(ctx context.Context, dsn string, log *slog.Logger) (*store.Store,
 }
 
 func healthCheck() int {
-	addr := os.Getenv("PORTAL_LISTEN")
+	addr := os.Getenv("SPECTRA_LISTEN")
 	if addr == "" {
 		addr = ":8080"
 	}
