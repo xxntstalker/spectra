@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Спецификация</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+  </style>
+</head>
+<body>
+  <script>
+    // The viewer runs in its own document (the portal embeds it in an iframe)
+    // so that the API reference bundle cannot collide with the portal's own
+    // styles, and so switching services is a plain iframe navigation.
+    (function () {
+      const params = new URLSearchParams(location.search);
+      const service = params.get('service');
+      if (!service) {
+        document.body.textContent = 'Не указан сервис.';
+        return;
+      }
+      let specURL = '/api/services/' + encodeURIComponent(service) + '/spec';
+      const version = params.get('version');
+      if (version) specURL += '?version=' + encodeURIComponent(version);
+
+      const mount = document.createElement('script');
+      mount.id = 'api-reference';
+      mount.dataset.url = specURL;
+      mount.dataset.configuration = JSON.stringify({
+        theme: 'default',
+        darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches,
+        hideDownloadButton: false,
+        // The portal already provides its own navigation between services.
+        showSidebar: true
+      });
+      document.body.appendChild(mount);
+
+      const bundle = document.createElement('script');
+      bundle.src = '/vendor/scalar.standalone.js';
+      document.body.appendChild(bundle);
+    })();
+  </script>
+</body>
+</html>

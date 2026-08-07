@@ -1,0 +1,74 @@
+package api
+
+import (
+	"crypto/subtle"
+	"net/http"
+)
+
+// The portal has two audiences.
+//
+// Reading — the host list, the specs, the change feed — is open to anyone who
+// can reach the portal, which in practice means anyone on the corporate
+// network. That is the whole point of a portal: people should not need an
+// account to look up an API.
+//
+// Everything that changes state or acts on someone else's service is behind a
+// login: editing a service, supplying a spec URL, triggering a probe, the
+// settings page. Those are the operations that made this API dangerous when it
+// gained write access — a spec URL a stranger can set is a request the portal
+// makes from inside the cluster.
+func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkAdmin(w, r) {
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) requireAdminHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkAdmin(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) checkAdmin(w http.ResponseWriter, r *http.Request) bool {
+	// No credentials configured means no administration — never "no check".
+	// Failing open here would hand write access to everyone on the network.
+	if s.cfg.Admin.User == "" || s.cfg.Admin.Password == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "administration is disabled: set PORTAL_ADMIN_USER and PORTAL_ADMIN_PASSWORD",
+		})
+		return false
+	}
+
+	user, password, ok := r.BasicAuth()
+	if !ok || !equal(user, s.cfg.Admin.User) || !equal(password, s.cfg.Admin.Password) {
+		// The realm makes the browser show its own login dialog, which is all
+		// the login form this needs.
+		w.Header().Set("WWW-Authenticate", `Basic realm="API Portal", charset="UTF-8"`)
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "нужен вход администратора"})
+		return false
+	}
+	return true
+}
+
+// equal compares in constant time so that a wrong password cannot be found by
+// measuring how long the comparison took.
+func equal(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// IsAdmin reports whether the caller is authenticated, so the UI can hide the
+// controls it would not be allowed to use. It is a convenience, not a control:
+// the endpoints check for themselves.
+func (s *Server) isAdmin(r *http.Request) bool {
+	if s.cfg.Admin.User == "" || s.cfg.Admin.Password == "" {
+		return false
+	}
+	user, password, ok := r.BasicAuth()
+	return ok && equal(user, s.cfg.Admin.User) && equal(password, s.cfg.Admin.Password)
+}

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Portal</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>📘</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">API&nbsp;Portal</a>
+    <input id="filter" class="filter" type="search" placeholder="Поиск по имени, хосту, тегу…" autocomplete="off">
+    <button id="reload" class="btn small"
+            title="Перечитать данные портала. Сервисы при этом не опрашиваются — для этого есть «Опросить сейчас» на странице сервиса.">Перечитать</button>
+    <span id="auth-box"></span>
+  </header>
+
+  <div class="layout">
+    <nav id="sidebar" class="sidebar" aria-label="Навигация"></nav>
+    <main id="main" class="main"></main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
