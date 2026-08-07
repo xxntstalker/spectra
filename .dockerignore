@@ -1,0 +1,15 @@
+.git
+.gitignore
+bin/
+data/
+*.db
+*.db-wal
+*.db-shm
+README.md
+Makefile
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Личные настройки Claude Code.
+.claude/
