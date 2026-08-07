@@ -24,11 +24,14 @@ type Version struct {
 	SpecVersion   string    `json:"specVersion,omitempty"`
 	EndpointCount int       `json:"endpointCount"`
 	Spec          []byte    `json:"-"`
+	// RollbackOf is the revision this one returned to, when the contract is
+	// byte-for-byte a state seen before.
+	RollbackOf *int `json:"rollbackOf,omitempty"`
 }
 
 func (s *Store) LatestVersion(ctx context.Context, serviceID int64) (*Version, error) {
 	return s.scanVersion(s.pool.QueryRow(ctx, `
-		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, spec
+		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, rollback_of, spec
 		FROM spec_versions WHERE service_id = $1 ORDER BY id DESC LIMIT 1`, serviceID))
 }
 
@@ -36,14 +39,14 @@ func (s *Store) LatestVersion(ctx context.Context, serviceID int64) (*Version, e
 // primary key: links people share should carry the number they can see.
 func (s *Store) GetVersion(ctx context.Context, serviceID int64, revision int) (*Version, error) {
 	return s.scanVersion(s.pool.QueryRow(ctx, `
-		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, spec
+		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, rollback_of, spec
 		FROM spec_versions WHERE service_id = $1 AND revision = $2`, serviceID, revision))
 }
 
 func (s *Store) scanVersion(row pgx.Row) (*Version, error) {
 	var v Version
 	err := row.Scan(&v.ID, &v.Revision, &v.ServiceID, &v.Hash, &v.CapturedAt, &v.Title,
-		&v.APIVersion, &v.SpecVersion, &v.EndpointCount, &v.Spec)
+		&v.APIVersion, &v.SpecVersion, &v.EndpointCount, &v.RollbackOf, &v.Spec)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -55,7 +58,7 @@ func (s *Store) scanVersion(row pgx.Row) (*Version, error) {
 
 func (s *Store) ListVersions(ctx context.Context, serviceID int64, limit int) ([]Version, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count
+		SELECT id, revision, service_id, hash, captured_at, title, api_version, spec_version, endpoint_count, rollback_of
 		FROM spec_versions WHERE service_id = $1 ORDER BY id DESC LIMIT $2`, serviceID, limit)
 	if err != nil {
 		return nil, err
@@ -66,12 +69,23 @@ func (s *Store) ListVersions(ctx context.Context, serviceID int64, limit int) ([
 	for rows.Next() {
 		var v Version
 		if err := rows.Scan(&v.ID, &v.Revision, &v.ServiceID, &v.Hash, &v.CapturedAt, &v.Title,
-			&v.APIVersion, &v.SpecVersion, &v.EndpointCount); err != nil {
+			&v.APIVersion, &v.SpecVersion, &v.EndpointCount, &v.RollbackOf); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// PreviousRevisionWithHash reports the earliest revision of this service whose
+// contract hash matches, or nil. A match means the service returned to a state
+// it had before — almost always a rolled-back deploy.
+func (s *Store) PreviousRevisionWithHash(ctx context.Context, serviceID int64, hash string) (*int, error) {
+	var revision *int
+	err := s.pool.QueryRow(ctx, `
+		SELECT min(revision) FROM spec_versions WHERE service_id = $1 AND hash = $2`,
+		serviceID, hash).Scan(&revision)
+	return revision, err
 }
 
 // InsertVersion assigns the next per-service revision number.
@@ -87,13 +101,15 @@ func (s *Store) InsertVersion(ctx context.Context, v *Version) (int64, error) {
 		var revision int
 		err := s.pool.QueryRow(ctx, `
 			INSERT INTO spec_versions
-				(service_id, revision, hash, captured_at, spec, title, api_version, spec_version, endpoint_count)
+				(service_id, revision, hash, captured_at, spec, title, api_version, spec_version,
+				 endpoint_count, rollback_of)
 			VALUES (
 				$1,
 				(SELECT COALESCE(max(revision), 0) + 1 FROM spec_versions WHERE service_id = $1),
-				$2,$3,$4,$5,$6,$7,$8)
+				$2,$3,$4,$5,$6,$7,$8,$9)
 			RETURNING id, revision`,
-			v.ServiceID, v.Hash, v.CapturedAt, v.Spec, v.Title, v.APIVersion, v.SpecVersion, v.EndpointCount).
+			v.ServiceID, v.Hash, v.CapturedAt, v.Spec, v.Title, v.APIVersion, v.SpecVersion,
+			v.EndpointCount, v.RollbackOf).
 			Scan(&id, &revision)
 		if err == nil {
 			v.Revision = revision

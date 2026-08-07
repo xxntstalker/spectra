@@ -366,3 +366,5 @@ table.urls td.num { text-align: right; color: var(--muted); width: 60px; }
 
 /* Переключатель темы: иконка меняется по выбранному режиму. */
 #theme { min-width: 34px; }
+
+.badge.rollback { background: var(--panel-alt); border-color: var(--warn); color: var(--warn); }

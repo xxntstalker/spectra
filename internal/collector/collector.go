@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -381,10 +382,18 @@ func (c *Collector) storeRevision(ctx context.Context, svc store.Service, doc *o
 	}
 	index := normalized.BuildIndex()
 
+	// A contract identical to one seen before is a rolled-back deploy, not a
+	// new change. Recorded as such so the feed says what happened instead of
+	// re-listing the endpoints as if they had just moved.
+	rollbackOf, err := c.store.PreviousRevisionWithHash(ctx, svc.ID, hash)
+	if err != nil {
+		return err
+	}
+
 	versionID, err := c.store.InsertVersion(ctx, &store.Version{
 		ServiceID: svc.ID, Hash: hash, CapturedAt: now, Spec: canonical,
 		Title: doc.Title(), APIVersion: doc.APIVersion(), SpecVersion: doc.SpecVersion(),
-		EndpointCount: len(index.Ops),
+		EndpointCount: len(index.Ops), RollbackOf: rollbackOf,
 	})
 	if err != nil {
 		return err
@@ -403,12 +412,22 @@ func (c *Collector) storeRevision(ctx context.Context, svc store.Service, doc *o
 			return perr
 		}
 		diff := openapi.Compare(prevDoc.Normalized(opts), normalized)
+		if rollbackOf != nil {
+			// The breaking flag is left as computed: anyone who integrated
+			// against the version being rolled back really is broken by it.
+			// Only the explanation changes.
+			diff.Notes = append(diff.Notes, openapi.Detail{
+				Code:    "spec.rollback",
+				Subject: strconv.Itoa(*rollbackOf),
+			})
+		}
 		change.FromVersionID = &previous.ID
 		change.Breaking = diff.Breaking
 		change.Added, change.Removed, change.Modified = diff.Added, diff.Removed, diff.Modified
 		change.Diff, _ = json.Marshal(diff)
 		c.log.Info("spec changed", "service", svc.ID, "added", diff.Added,
-			"removed", diff.Removed, "modified", diff.Modified, "breaking", diff.Breaking)
+			"removed", diff.Removed, "modified", diff.Modified,
+			"breaking", diff.Breaking, "rollbackOf", rollbackOf)
 	}
 	if err := c.store.InsertChange(ctx, change); err != nil {
 		return err

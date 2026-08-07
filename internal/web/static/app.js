@@ -56,6 +56,7 @@ const DETAIL_LABEL = {
   'spec.openapi.changed': s => `версия OpenAPI: ${s}`,
   'spec.title.changed': s => `название: ${s}`,
   'spec.other.changed': () => 'изменения вне эндпоинтов (security, tags, описание спеки)',
+  'spec.rollback': s => `откат: контракт вернулся к состоянию ревизии ${s}`,
 };
 
 const KIND_LABEL = { added: 'добавлен', removed: 'удалён', modified: 'изменён' };
@@ -177,7 +178,7 @@ function initTheme() {
 function renderAuthBox() {
   const box = el('auth-box');
   if (!state.overview?.adminEnabled) {
-    box.innerHTML = '<span class="muted" title="PORTAL_ADMIN_USER / PORTAL_ADMIN_PASSWORD не заданы">настройка выключена</span>';
+    box.innerHTML = '<span class="muted" title="SPECTRA_ADMIN_USER / SPECTRA_ADMIN_PASSWORD не заданы">настройка выключена</span>';
     return;
   }
   box.innerHTML = isAdmin()
@@ -351,7 +352,7 @@ function renderURLs() {
         ${isAdmin()
           ? (state.overview?.kubernetes
               ? 'Список приходит из Ingress кластера. Хост без спеки — нормальное состояние; спрятать его можно на вкладке «Настройка» у сервиса.'
-              : 'Дискавери из Kubernetes выключено; список берётся из PORTAL_STATIC_SERVICES.')
+              : 'Дискавери из Kubernetes выключено; список берётся из SPECTRA_STATIC_SERVICES.')
           : 'Спецификации собираются автоматически. Часть сервисов их не публикует — это нормально.'}
       </p>
 
@@ -409,6 +410,8 @@ function changeCard(change, showService) {
           : `<span class="title">Ревизия ${change.toRevision}${
               change.fromRevision ? ` <span class="muted">(была ${change.fromRevision})</span>` : ''
             }</span>`}
+        ${(change.diff?.notes || []).some(n => n.code === 'spec.rollback')
+          ? '<span class="badge rollback">откат</span>' : ''}
         ${change.breaking ? '<span class="badge breaking">ломающее</span>' : ''}
         <span class="counts">${counts.join('')}</span>
         <span class="when" title="${esc(absolute(change.detectedAt))}">${esc(ago(change.detectedAt))}</span>
@@ -478,7 +481,7 @@ function serviceHeader(svc, tab) {
         <li>обновлено: <b title="${esc(absolute(svc.updatedAt))}">${esc(ago(svc.updatedAt))}</b></li>
         <li>эндпоинтов: <b>${svc.endpointCount || 0}</b></li>
         <li>ревизий: <b>${svc.versionCount || 0}</b></li>
-        ${isAdmin() ? `<li>проверено: <b title="${esc(absolute(svc.lastCheckedAt))}">${esc(ago(svc.lastCheckedAt))}</b></li>` : ''}
+        <li>проверено: <b title="${esc(absolute(svc.lastCheckedAt))}">${esc(ago(svc.lastCheckedAt))}</b></li>
         ${svc.namespace ? `<li>namespace: <b>${esc(svc.namespace)}</b></li>` : ''}
         ${svc.backend ? `<li>backend: <b>${esc(svc.backend)}</b></li>` : ''}
       </ul>
@@ -614,7 +617,8 @@ async function renderHistory(svc) {
         <td title="${esc(absolute(v.capturedAt))}">${esc(ago(v.capturedAt))}</td>
         <td>${esc(v.apiVersion || '—')}</td>
         <td>${v.endpointCount}</td>
-        <td class="hash">${esc(v.hash.slice(0, 12))}</td>
+        <td class="hash">${esc(v.hash.slice(0, 12))}${
+          v.rollbackOf ? `<br><span class="badge rollback">= ревизия ${v.rollbackOf}</span>` : ''}</td>
         <td><a href="/viewer.html?service=${svc.id}&version=${v.revision}" target="_blank" rel="noopener">открыть</a></td>
       </tr>`).join('');
 
@@ -641,7 +645,7 @@ async function renderSettings() {
         <h1>Настройки</h1>
         <div class="empty">Нужен вход администратора.${
           state.overview?.adminEnabled ? '' :
-          ' Учётные данные не заданы: PORTAL_ADMIN_USER и PORTAL_ADMIN_PASSWORD.'}</div>
+          ' Учётные данные не заданы: SPECTRA_ADMIN_USER и SPECTRA_ADMIN_PASSWORD.'}</div>
       </div>`;
     return;
   }
