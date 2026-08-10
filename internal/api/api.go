@@ -39,6 +39,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.health)
+	// Metrics describe the portal's own work and carry no service addresses,
+	// so they need no login — but they do belong behind your ingress.
+	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /api/overview", s.overview)
 
 	// Public: looking things up. Anyone who reaches the portal may read.

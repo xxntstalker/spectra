@@ -221,6 +221,33 @@ msg="cluster sync" found=42 new=42 gone=0
 сервисы появились и какие исчезли. Это отличает «новых нет» от «сканирование
 падает со вторника».
 
+### Метрики
+
+`GET /metrics` в формате Prometheus, без логина (адресов сервисов там нет, но
+за ingress их всё же держите).
+
+| Метрика | |
+|---|---|
+| `spectra_up` | база доступна |
+| `spectra_services{state=…}` | сервисы по состоянию: ok, no_spec, unreachable, hidden, gone |
+| `spectra_services_manual_only` | выпали из автоопроса, ждут ручного адреса |
+| `spectra_services_without_owner` | без команды и контакта |
+| `spectra_discovery_last_success_timestamp_seconds{source}` | когда последний раз удалось прочитать Ingress |
+| `spectra_discovery_last_failure_timestamp_seconds{source}` | когда последний раз не удалось |
+| `spectra_oldest_successful_check_timestamp_seconds` | самая старая успешная проверка — насколько устарели данные в худшем случае |
+| `spectra_spec_revisions_total` | сохранённых ревизий: по ним видно, когда пора ужимать ретенцию |
+| `spectra_poller_active` | эта реплика держит блокировку опроса |
+
+Два алерта, которые я бы завёл в первую очередь:
+
+```
+# Сканирование кластера молча падает, а портал продолжает показывать старый список
+time() - spectra_discovery_last_success_timestamp_seconds > 3 * 3600
+
+# Опрашивать перестала любая реплика
+sum(spectra_poller_active) == 0
+```
+
 ---
 
 ## 7. Обновление и откат
@@ -228,7 +255,40 @@ msg="cluster sync" found=42 new=42 gone=0
 Обычный `kubectl set image` / `rollout undo`. Миграции только добавляют — откат
 на предыдущую версию образа безопасен, схема остаётся совместимой.
 
-Бэкап — обычный бэкап вашей Postgres. Отдельного состояния у портала нет.
+## Бэкап и восстановление
+
+Отдельного состояния у Spectra нет — всё в Postgres, так что подойдёт ваш
+обычный бэкап базы. Если своего нет, вот проверенная процедура.
+
+**Останавливать портал не нужно:** `pg_dump` снимает согласованный снимок на
+работающей базе.
+
+```bash
+kubectl -n spectra exec deploy/postgres -- \
+  pg_dump -U spectra -d spectra -Fc -f /tmp/spectra.dump
+kubectl cp spectra/$(kubectl -n spectra get pod -l app=postgres \
+  -o jsonpath='{.items[0].metadata.name}'):/tmp/spectra.dump ./spectra.dump
+```
+
+Восстановление:
+
+```bash
+PG=$(kubectl -n spectra get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+kubectl cp ./spectra.dump spectra/$PG:/tmp/spectra.dump
+kubectl -n spectra exec deploy/postgres -- \
+  pg_restore -U spectra -d spectra --clean --if-exists /tmp/spectra.dump
+kubectl -n spectra rollout restart deploy/spectra
+```
+
+Проверено на живом кластере: база сносилась целиком, после восстановления
+вернулись все 11 сервисов, 69 ревизий, вписанные руками владельцы и таблица
+применённых миграций. Портал поднялся поверх восстановленной базы без ошибок.
+
+**Что проверить после восстановления:**
+
+```bash
+curl -s https://ваш-адрес/metrics | grep -E 'spectra_up|services_total|revisions_total'
+```
 
 ---
 

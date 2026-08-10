@@ -520,3 +520,48 @@ func TestProxyForwardsTheUsersOwnToken(t *testing.T) {
 		t.Error("запрос доехал до сервиса без входа в портал")
 	}
 }
+
+func TestMetricsExposeWhatYouWouldAlertOn(t *testing.T) {
+	e := newEnv(t, nil)
+	e.seed(t, standardService())
+	ctx := context.Background()
+	e.store.RecordProbe(ctx, store.ProbeResult{ServiceID: e.ids["orders"],
+		Status: store.ProbeOK, Succeeded: true, AutoProbe: true, CheckedAt: time.Now()})
+	e.store.RecordSyncFailure(ctx, "kubernetes", context.DeadlineExceeded)
+
+	rec := e.do(t, "GET", "/metrics", "", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("статус = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"spectra_up 1",
+		`spectra_services{state="ok"} 1`,
+		"spectra_services_without_owner",
+		"spectra_services_manual_only",
+		// The alert that matters most: discovery quietly failing while the
+		// portal keeps serving its cached list.
+		`spectra_discovery_last_failure_timestamp_seconds{source="kubernetes"}`,
+		"spectra_oldest_successful_check_timestamp_seconds",
+		"spectra_spec_revisions_total",
+		"spectra_poller_active",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("в метриках нет %q", want)
+		}
+	}
+	// Every series needs its HELP/TYPE header or scrapers complain.
+	if strings.Count(body, "# TYPE") < 8 {
+		t.Errorf("метрики без объявлений типов:\n%s", body)
+	}
+	// Addresses of watched services must not leak through metric labels.
+	for _, forbidden := range []string{"orders.shop", "orders.example.com", "shop"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("в метриках утёк адрес сервиса: %q", forbidden)
+		}
+	}
+}

@@ -249,3 +249,28 @@ func (s *Store) Counts(ctx context.Context) (Counts, error) {
 			&c.Gone, &c.NoOwner)
 	return c, err
 }
+
+// OldestSuccessfulCheck answers "как давно в худшем случае проверялись данные,
+// которые сейчас показываются". Hidden services and ones parked for manual
+// entry are excluded: nobody expects those to be fresh.
+func (s *Store) OldestSuccessfulCheck(ctx context.Context) (*time.Time, error) {
+	var oldest *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT min(last_success_at) FROM services
+		WHERE present AND auto_probe AND review_state <> $1 AND last_success_at IS NOT NULL`,
+		ReviewIgnored).Scan(&oldest)
+	return oldest, err
+}
+
+// HistoryTotals backs the growth metrics: revisions carry a full copy of every
+// specification, so the number is what tells an operator when retention needs
+// tightening.
+func (s *Store) HistoryTotals(ctx context.Context) (revisions, changes, breaking int, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM spec_versions),
+			(SELECT count(*) FROM changes),
+			(SELECT count(*) FROM changes WHERE breaking)`).
+		Scan(&revisions, &changes, &breaking)
+	return revisions, changes, breaking, err
+}

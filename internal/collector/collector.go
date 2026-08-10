@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"spectra/internal/config"
@@ -35,6 +36,10 @@ type Collector struct {
 	trigger chan int64 // service id, or 0 for "everything"
 	syncNow chan struct{}
 
+	// polling records whether this replica currently holds the poller lock, so
+	// metrics can show which one of several is actually doing the work.
+	polling atomic.Bool
+
 	// sweeping serialises full sweeps. A sweep can be started from the ticker,
 	// from a manual refresh and from a cluster sync that found new services;
 	// letting two overlap would double the requests every watched service
@@ -52,6 +57,9 @@ func New(cfg *config.Config, st *store.Store, kube *k8s.Client, log *slog.Logger
 		syncNow: make(chan struct{}, 1),
 	}
 }
+
+// IsPolling reports whether this replica holds the poller lock.
+func (c *Collector) IsPolling() bool { return c.polling.Load() }
 
 // Refresh queues a poll. serviceID 0 means every candidate.
 func (c *Collector) Refresh(ctx context.Context, serviceID int64) {
@@ -95,7 +103,9 @@ func (c *Collector) Run(ctx context.Context) {
 			continue
 		}
 		c.log.Info("this replica is the active poller")
+		c.polling.Store(true)
 		c.loop(ctx)
+		c.polling.Store(false)
 		release()
 	}
 }
