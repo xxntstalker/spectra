@@ -10,6 +10,10 @@ type Discovered struct {
 	Key         string // stable identity across sweeps
 	DisplayName string
 	BaseURL     string
+	// FallbackURL is the same service reached the other way — the public host
+	// when BaseURL is in-cluster, and the reverse. Empty when there is only one
+	// way in, as for a statically configured service.
+	FallbackURL string
 	Host        string
 	Namespace   string
 	IngressName string
@@ -74,14 +78,20 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 		var inserted bool
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO services
-				(key, source, display_name, base_url, host, namespace, ingress_name, backend,
+				(key, source, display_name, base_url, fallback_url, host, namespace, ingress_name, backend,
 				 first_seen_at, last_seen_at, present, group_id, spec_url, spec_url_source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,TRUE,$10,NULLIF($11,''),
+			VALUES ($1,$2,$3,$4,NULLIF($13,''),$5,$6,$7,$8,$9,$9,TRUE,$10,NULLIF($11,''),
 			        CASE WHEN $11 = '' THEN NULL ELSE $12 END)
 			ON CONFLICT (key) DO UPDATE SET
 				-- Address details follow the cluster; everything a person
 				-- edited is left alone.
 				base_url     = excluded.base_url,
+				fallback_url = excluded.fallback_url,
+				-- Каждое сканирование даёт основному адресу ещё один шанс.
+				-- Иначе сервис, однажды уехавший на запасной адрес, остался бы
+				-- там навсегда — и после починки сети продолжал бы ходить
+				-- через ingress. Цена ошибки — одна неудачная попытка в час.
+				using_fallback = FALSE,
 				host         = excluded.host,
 				namespace    = excluded.namespace,
 				ingress_name = excluded.ingress_name,
@@ -118,7 +128,7 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 			RETURNING (xmax = 0)`,
 			item.Key, source, item.DisplayName, item.BaseURL, item.Host,
 			item.Namespace, item.IngressName, item.Backend, now,
-			groupID, item.SpecURL, SourceAnnotation).
+			groupID, item.SpecURL, SourceAnnotation, item.FallbackURL).
 			Scan(&inserted); err != nil {
 			return res, err
 		}

@@ -107,6 +107,43 @@ func TestDiscoverBuildsClusterAddresses(t *testing.T) {
 	if item.Host != "orders.example.com" || item.Namespace != "shop" || item.IngressName != "orders" {
 		t.Errorf("provenance lost: %+v", item)
 	}
+	// The public host is kept as the way in for when the in-cluster address
+	// stops answering — a NetworkPolicy, a renamed Service, a port only the
+	// ingress controller may reach.
+	if item.FallbackURL != "http://orders.example.com" {
+		t.Errorf("fallback = %q, want the public host", item.FallbackURL)
+	}
+}
+
+// Whichever address is primary, the other one is the fallback: the pair is the
+// same, only the order changes.
+func TestFallbackIsTheOtherAddress(t *testing.T) {
+	body := ingressJSON(map[string]any{
+		"metadata": map[string]any{"name": "orders", "namespace": "shop"},
+		"spec": map[string]any{
+			"tls": []any{map[string]any{"hosts": []any{"orders.example.com"}}},
+			"rules": []any{map[string]any{
+				"host": "orders.example.com",
+				"http": map[string]any{"paths": []any{map[string]any{
+					"path": "/",
+					"backend": map[string]any{"service": map[string]any{
+						"name": "orders-svc", "port": map[string]any{"number": 80},
+					}},
+				}}},
+			}},
+		},
+	})
+	c := newClient(t, fakeAPIServer(t, body).URL, func(k *config.Kubernetes) {
+		k.Target = config.TargetIngress
+	})
+
+	item := discover(t, c)["orders-svc.shop:80"]
+	if item.BaseURL != "https://orders.example.com" {
+		t.Errorf("base URL = %q", item.BaseURL)
+	}
+	if item.FallbackURL != "http://orders-svc.shop:80" {
+		t.Errorf("fallback = %q, want the in-cluster address", item.FallbackURL)
+	}
 }
 
 func TestDiscoverCanTargetTheIngressHost(t *testing.T) {

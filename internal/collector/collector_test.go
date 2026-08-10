@@ -264,6 +264,223 @@ func TestUnreachableBacksOffButStays(t *testing.T) {
 	}
 }
 
+// ------------------------------------------------- запасной адрес опроса --
+
+// deadURL returns an address nothing listens on, so a connection to it is
+// refused rather than answered. That is the difference between "unreachable"
+// and "up but undocumented", and the fallback only applies to the first.
+func deadURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+	return url
+}
+
+// registerPair puts a service in with both ways in.
+func (h *harness) registerPair(t *testing.T, name, baseURL, fallbackURL string) int64 {
+	t.Helper()
+	if _, err := h.store.SyncDiscovered(context.Background(), "test", []store.Discovered{{
+		Key: name, DisplayName: name, BaseURL: baseURL, FallbackURL: fallbackURL,
+		Host: name + ".example.com",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	services, err := h.store.ListServices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range services {
+		if s.DisplayName == name {
+			return s.ID
+		}
+	}
+	t.Fatalf("сервис %s не зарегистрирован", name)
+	return 0
+}
+
+// The case this exists for: the in-cluster address stops answering while the
+// service itself is perfectly alive behind its Ingress.
+func TestUnreachablePrimaryFallsBackToThePublicHost(t *testing.T) {
+	body := spec
+	h := newHarness(t, nil)
+	public, _ := specServer(t, &body, nil)
+	id := h.registerPair(t, "orders", deadURL(t), public.URL)
+
+	h.poll(t)
+
+	svc := h.service(t, id)
+	if svc.ProbeStatus != store.ProbeOK {
+		t.Fatalf("статус = %q (%s), сервис доступен по публичному хосту",
+			svc.ProbeStatus, svc.LastError)
+	}
+	if !svc.UsingFallback {
+		t.Error("переключение на запасной адрес не запомнено — на каждом опросе будет лишняя неудачная попытка")
+	}
+	if svc.SpecURL != public.URL+"/openapi.json" {
+		t.Errorf("адрес спеки = %q, ожидался публичный", svc.SpecURL)
+	}
+	if svc.VersionCount != 1 {
+		t.Errorf("ревизий сохранено %d, ожидалась одна", svc.VersionCount)
+	}
+}
+
+// The preference is what keeps the fallback cheap: one failed attempt on the
+// switch, not one on every poll afterwards.
+func TestTheAddressThatWorkedIsTriedFirst(t *testing.T) {
+	primary, fallback := "http://svc.ns:8080", "https://svc.example.com"
+
+	got := addressesFor(store.Service{BaseURL: primary, FallbackURL: fallback})
+	if len(got) != 2 || got[0].baseURL != primary || got[1].baseURL != fallback || !got[1].fallback {
+		t.Errorf("обычный порядок = %+v", got)
+	}
+
+	got = addressesFor(store.Service{BaseURL: primary, FallbackURL: fallback, UsingFallback: true})
+	if len(got) != 2 || got[0].baseURL != fallback || !got[0].fallback || got[1].baseURL != primary {
+		t.Errorf("после переключения порядок = %+v", got)
+	}
+
+	// A service with one way in — a statically configured one — must not be
+	// probed twice at the same address.
+	got = addressesFor(store.Service{BaseURL: primary})
+	if len(got) != 1 {
+		t.Errorf("без запасного адреса попыток %d", len(got))
+	}
+	got = addressesFor(store.Service{BaseURL: primary, FallbackURL: primary})
+	if len(got) != 1 {
+		t.Errorf("одинаковые адреса дали %d попыток", len(got))
+	}
+}
+
+// A host that answers and has no specification answers the same way through
+// either door. Probing the second one would double the requests it sees and
+// learn nothing.
+func TestNoSpecDoesNotProbeTheSecondAddress(t *testing.T) {
+	h := newHarness(t, nil)
+	var fallbackHits atomic.Int64
+	primary := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(primary.Close)
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(fallback.Close)
+
+	id := h.registerPair(t, "silent", primary.URL, fallback.URL)
+	h.poll(t)
+
+	if svc := h.service(t, id); svc.ProbeStatus != store.ProbeNoSpec {
+		t.Errorf("статус = %q, ожидался «спека не найдена»", svc.ProbeStatus)
+	}
+	if n := fallbackHits.Load(); n != 0 {
+		t.Errorf("запасной адрес опрошен %d раз, хотя основной ответил", n)
+	}
+}
+
+// When neither address answers the report has to name both, or the first
+// question after every alert is "а публичный адрес пробовали?".
+func TestBothAddressesDownReportsBoth(t *testing.T) {
+	h := newHarness(t, nil)
+	primary, fallback := deadURL(t), deadURL(t)
+	id := h.registerPair(t, "gone", primary, fallback)
+
+	h.poll(t)
+
+	svc := h.service(t, id)
+	if svc.ProbeStatus != store.ProbeUnreachable {
+		t.Fatalf("статус = %q", svc.ProbeStatus)
+	}
+	if !strings.Contains(svc.LastError, primary) || !strings.Contains(svc.LastError, fallback) {
+		t.Errorf("в ошибке нет обоих адресов: %q", svc.LastError)
+	}
+	// Nothing worked, so nothing was learned about which address to prefer.
+	if svc.UsingFallback {
+		t.Error("полный отказ переключил предпочтение адреса")
+	}
+}
+
+// hangingServer accepts connections and never answers, which is what a
+// NetworkPolicy that drops packets looks like from the client side — and the
+// case the fallback exists for.
+func hangingServer(t *testing.T) string {
+	t.Helper()
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() { close(done); srv.Close() })
+	return srv.URL
+}
+
+// A hanging primary must not eat the whole budget: the point of the fallback
+// is that the service stays readable, and a dropped packet is more common than
+// a refused connection.
+func TestHangingPrimaryStillLeavesTimeForTheFallback(t *testing.T) {
+	body := spec
+	h := newHarness(t, func(s *store.Settings) {
+		s.ProbeBudget = 6 * time.Second
+		s.RequestTimeout = 2 * time.Second
+	})
+	public, _ := specServer(t, &body, nil)
+	id := h.registerPair(t, "hung", hangingServer(t), public.URL)
+
+	h.poll(t)
+
+	svc := h.service(t, id)
+	if svc.ProbeStatus != store.ProbeOK {
+		t.Fatalf("статус = %q (%s), сервис читается по запасному адресу",
+			svc.ProbeStatus, svc.LastError)
+	}
+	if !svc.UsingFallback {
+		t.Error("переключение на запасной адрес не запомнено")
+	}
+}
+
+// The result of a poll that ran out of time is exactly the result worth
+// keeping. Writing it under the deadline that just expired loses it, and the
+// service then looks like one the poller never got to.
+func TestTimedOutPollIsStillRecorded(t *testing.T) {
+	h := newHarness(t, func(s *store.Settings) {
+		s.ProbeBudget = 2 * time.Second
+		s.RequestTimeout = time.Second
+	})
+	id := h.registerPair(t, "hung", hangingServer(t), hangingServer(t))
+
+	before := time.Now()
+	h.poll(t)
+
+	svc := h.service(t, id)
+	if svc.LastCheckedAt == nil || svc.LastCheckedAt.Before(before) {
+		t.Fatalf("проверка не записана: last_checked_at = %v", svc.LastCheckedAt)
+	}
+	if svc.ProbeStatus != store.ProbeUnreachable {
+		t.Errorf("статус = %q, ожидался «недоступен»", svc.ProbeStatus)
+	}
+	if svc.LastError == "" {
+		t.Error("ошибка не сохранена — по интерфейсу будет не понять, что случилось")
+	}
+}
+
+// A sweep re-reads the topology, and that is the moment to give the primary
+// address another chance — otherwise a service that once moved to its public
+// host would stay there long after the network was repaired.
+func TestClusterSweepGivesThePrimaryAddressAnotherChance(t *testing.T) {
+	body := spec
+	h := newHarness(t, nil)
+	public, _ := specServer(t, &body, nil)
+	id := h.registerPair(t, "orders", deadURL(t), public.URL)
+
+	h.poll(t)
+	if !h.service(t, id).UsingFallback {
+		t.Fatal("подготовка: сервис не переключился на запасной адрес")
+	}
+
+	h.registerPair(t, "orders", h.service(t, id).BaseURL, public.URL)
+	if h.service(t, id).UsingFallback {
+		t.Error("после сканирования кластера основной адрес не получил повторной попытки")
+	}
+}
+
 // A human asking for a retry must get one whatever happened before.
 func TestManualProbeReturnsAServiceToTheSchedule(t *testing.T) {
 	body := spec

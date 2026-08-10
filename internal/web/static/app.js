@@ -481,6 +481,9 @@ function serviceHeader(svc, tab) {
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
+      ${svc.usingFallback ? `<div class="notice-box">Основной адрес не отвечал — опрос идёт по запасному:
+        <code>${esc(svc.fallbackUrl || '')}</code>.
+        Ближайшее сканирование кластера снова попробует основной.</div>` : ''}
       ${ownerBlock(svc)}
       <ul class="facts">
         <li>статус: <b>${esc(PROBE_LABEL[svc.probeStatus] || svc.probeStatus)}</b></li>

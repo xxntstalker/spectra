@@ -339,22 +339,27 @@ func (o Owner) Known() bool {
 
 // Service is a registry entry joined with the state of its newest revision.
 type Service struct {
-	ID          int64    `json:"id"`
-	Key         string   `json:"key"`
-	Source      string   `json:"source"`
-	DisplayName string   `json:"displayName"`
-	BaseURL     string   `json:"baseUrl"`
-	ReviewState string   `json:"reviewState"`
-	ProbeStatus string   `json:"probeStatus"`
-	Present     bool     `json:"present"`
-	Host        string   `json:"host,omitempty"`
-	Namespace   string   `json:"namespace,omitempty"`
-	IngressName string   `json:"ingressName,omitempty"`
-	Backend     string   `json:"backend,omitempty"`
-	GroupID     *int64   `json:"groupId,omitempty"`
-	GroupName   string   `json:"groupName,omitempty"`
-	Tags        []string `json:"tags"`
-	Notes       string   `json:"notes,omitempty"`
+	ID          int64  `json:"id"`
+	Key         string `json:"key"`
+	Source      string `json:"source"`
+	DisplayName string `json:"displayName"`
+	BaseURL     string `json:"baseUrl"`
+	// FallbackURL is the second way into the same service, tried when the
+	// primary address does not answer. UsingFallback says which one the last
+	// poll actually used.
+	FallbackURL   string   `json:"fallbackUrl,omitempty"`
+	UsingFallback bool     `json:"usingFallback"`
+	ReviewState   string   `json:"reviewState"`
+	ProbeStatus   string   `json:"probeStatus"`
+	Present       bool     `json:"present"`
+	Host          string   `json:"host,omitempty"`
+	Namespace     string   `json:"namespace,omitempty"`
+	IngressName   string   `json:"ingressName,omitempty"`
+	Backend       string   `json:"backend,omitempty"`
+	GroupID       *int64   `json:"groupId,omitempty"`
+	GroupName     string   `json:"groupName,omitempty"`
+	Tags          []string `json:"tags"`
+	Notes         string   `json:"notes,omitempty"`
 
 	// Owner is who to ask about this service. Manual values win over anything
 	// the sweep discovered, per field.
@@ -393,6 +398,7 @@ type Service struct {
 
 const serviceColumns = `
 	s.id, s.key, s.source, s.display_name, s.base_url,
+	COALESCE(s.fallback_url,''), s.using_fallback,
 	s.review_state, s.probe_status, s.present,
 	COALESCE(s.host,''), COALESCE(s.namespace,''), COALESCE(s.ingress_name,''), COALESCE(s.backend,''),
 	s.group_id, COALESCE(g.name,''), s.tags, s.notes,
@@ -429,6 +435,7 @@ func scanService(row pgx.Row) (Service, error) {
 	var s Service
 	var groupID *int64
 	err := row.Scan(&s.ID, &s.Key, &s.Source, &s.DisplayName, &s.BaseURL,
+		&s.FallbackURL, &s.UsingFallback,
 		&s.ReviewState, &s.ProbeStatus, &s.Present,
 		&s.Host, &s.Namespace, &s.IngressName, &s.Backend,
 		&groupID, &s.GroupName, &s.Tags, &s.Notes,
@@ -601,6 +608,9 @@ type ProbeResult struct {
 	NextProbeAt   *time.Time
 	// AutoProbe false parks the service until someone asks for it by hand.
 	AutoProbe bool
+	// UsingFallback records which of the two addresses this poll used, so the
+	// next one starts with the address that last worked.
+	UsingFallback bool
 }
 
 func (s *Store) RecordProbe(ctx context.Context, p ProbeResult) error {
@@ -617,10 +627,12 @@ func (s *Store) RecordProbe(ctx context.Context, p ProbeResult) error {
 			fail_count      = CASE WHEN $5 THEN 0 ELSE fail_count + 1 END,
 			next_probe_at   = $10,
 			auto_probe      = $11,
+			using_fallback  = $12,
 			updated_at      = now()
 		WHERE id = $1`,
 		p.ServiceID, p.Status, p.Error, p.CheckedAt, p.Succeeded,
-		p.SpecURL, p.SpecURLSource, p.ETag, p.LastModified, p.NextProbeAt, p.AutoProbe)
+		p.SpecURL, p.SpecURLSource, p.ETag, p.LastModified, p.NextProbeAt, p.AutoProbe,
+		p.UsingFallback)
 	return err
 }
 

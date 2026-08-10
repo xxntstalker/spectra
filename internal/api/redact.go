@@ -15,6 +15,12 @@ import "spectra/internal/store"
 // public: hiding a field in JavaScript hides it from nobody.
 func redactService(s store.Service) store.Service {
 	s.BaseURL = ""
+	// The fallback address is whichever of the two BaseURL is not, so depending
+	// on SPECTRA_K8S_TARGET it is the in-cluster one. Blanked unconditionally
+	// rather than reasoned about per configuration — the public host is already
+	// published as Host, so nothing is lost.
+	s.FallbackURL = ""
+	s.UsingFallback = false
 	s.Backend = ""
 	s.Namespace = ""
 	s.IngressName = ""

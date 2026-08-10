@@ -247,6 +247,61 @@ func (c *Collector) PollDue(ctx context.Context) {
 	wg.Wait()
 }
 
+// address is one way into a service: the URL to talk to, and whether it is the
+// fallback rather than the primary one.
+type address struct {
+	baseURL  string
+	fallback bool
+}
+
+// addressesFor lists the addresses to try, in order.
+//
+// A service found in Kubernetes has two: the backend Service inside the
+// cluster and the public hostname from the Ingress rule. The in-cluster
+// address is normally the primary one, but it is also the one that breaks
+// first — a NetworkPolicy between namespaces, a Service renamed without the
+// Ingress following, a port only the ingress controller may reach. In each of
+// those the public host still answers, so reporting the service as dead would
+// be wrong.
+//
+// The address that last worked comes first, so a service that permanently
+// lives behind its public host does not pay for a failed in-cluster attempt on
+// every single poll. A cluster sweep resets that preference, which is what
+// gives the primary address another chance once the network is repaired.
+func addressesFor(svc store.Service) []address {
+	primary := address{baseURL: svc.BaseURL}
+	if svc.FallbackURL == "" || svc.FallbackURL == svc.BaseURL {
+		return []address{primary}
+	}
+	backup := address{baseURL: svc.FallbackURL, fallback: true}
+	if svc.UsingFallback {
+		return []address{backup, primary}
+	}
+	return []address{primary, backup}
+}
+
+// specURLOn re-points a known spec address at another base address. The path
+// identifies the document; the host is only how we get to it.
+func specURLOn(specURL, base string) string {
+	if specURL == "" || base == "" {
+		return ""
+	}
+	s, err := url.Parse(specURL)
+	if err != nil {
+		return ""
+	}
+	b, err := url.Parse(base)
+	if err != nil || b.Host == "" {
+		return ""
+	}
+	if s.Host == b.Host && s.Scheme == b.Scheme {
+		return specURL
+	}
+	out := *b
+	out.Path, out.RawQuery = s.Path, s.RawQuery
+	return out.String()
+}
+
 func (c *Collector) pollOne(ctx context.Context, svc store.Service, settings store.Settings) {
 	ctx, cancel := context.WithTimeout(ctx, settings.ProbeBudget)
 	defer cancel()
@@ -257,75 +312,153 @@ func (c *Collector) pollOne(ctx context.Context, svc store.Service, settings sto
 		Delay:     settings.ProbeDelay,
 	}
 	now := time.Now()
-	probe := store.ProbeResult{ServiceID: svc.ID, CheckedAt: now}
+
+	addresses := addressesFor(svc)
+	// Each address gets its own slice of the budget. Sharing one would defeat
+	// the fallback in exactly the case it exists for: a NetworkPolicy that
+	// drops packets instead of refusing them makes the primary address hang
+	// until the budget is gone, leaving nothing for the second attempt.
+	perAddress := settings.ProbeBudget / time.Duration(len(addresses))
 
 	var (
-		doc      *openapi.Doc
-		cachedOK bool
+		res    pollResult
+		failed []string
 	)
-	if svc.SpecURL != "" {
-		fetched, resp, err := c.fetchKnown(ctx, client, svc.SpecURL, svc.ETag, svc.LastModified)
+	for i, addr := range addresses {
+		res = c.pollAddress(ctx, client, svc, addr, now, perAddress)
+		if res.probe.Status != store.ProbeOK {
+			failed = append(failed, addr.baseURL+": "+res.probe.Error)
+		}
+		// Only "nothing answered" is worth asking the other address about. A
+		// service that answered and has no specification gives the same answer
+		// whichever door we knock on, and probing again would double the
+		// requests it sees for no new information.
+		if res.probe.Status != store.ProbeUnreachable || i+1 >= len(addresses) {
+			break
+		}
+		c.log.Info("адрес недоступен, пробую запасной",
+			"service", svc.ID, "name", svc.DisplayName,
+			"failed", addr.baseURL, "next", addresses[i+1].baseURL, "err", res.err)
+	}
+	probe := res.probe
+
+	if probe.Status != store.ProbeOK {
+		// Neither address worked: leave the preference where it was rather than
+		// letting whichever happened to be tried last become the new default.
+		probe.UsingFallback = svc.UsingFallback
+		// The UI shows one error line, and "недоступен" without saying which
+		// addresses were tried invites the same question every time.
+		probe.Error = strings.Join(failed, "; ")
+		// A service that answered and simply has no specification will not grow
+		// one on its own, so it leaves the automatic schedule entirely: someone
+		// has to supply an address and ask for a probe. An unreachable service
+		// is a different story — that is usually temporary, so it stays on the
+		// schedule and just backs off.
+		if probe.Status == store.ProbeNoSpec {
+			probe.AutoProbe = false
+			c.record(ctx, probe)
+			c.log.Warn("спецификация не найдена, автоматический опрос выключен",
+				"service", svc.ID, "name", svc.DisplayName, "err", res.err)
+			return
+		}
+		probe.AutoProbe = true
+		delay := backoff(settings, svc.FailCount)
+		next := now.Add(delay)
+		probe.NextProbeAt = &next
+		c.record(ctx, probe)
+		c.log.Warn("сервис недоступен", "service", svc.ID, "name", svc.DisplayName,
+			"status", probe.Status, "err", res.err, "retryIn", delay.String(),
+			"tried", len(addresses))
+		return
+	}
+
+	if probe.UsingFallback != svc.UsingFallback {
+		// Worth a line of its own: an operator reading the log should see that
+		// the portal changed which door it goes through, and when.
+		c.log.Warn("опрос переключён на другой адрес", "service", svc.ID,
+			"name", svc.DisplayName, "usingFallback", probe.UsingFallback,
+			"url", probe.SpecURL)
+	}
+
+	c.record(ctx, probe)
+	if res.doc == nil {
+		return // 304: the document we already hold is still current
+	}
+	// The document is already in hand; losing it to a budget that was meant to
+	// bound network probing, not database writes, would mean re-downloading it
+	// on the next poll for nothing.
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelSave()
+	if err := c.storeRevision(saveCtx, svc, res.doc, now, settings); err != nil {
+		c.log.Error("store revision", "service", svc.ID, "err", err)
+	}
+}
+
+// pollResult is one attempt against one address.
+type pollResult struct {
+	probe store.ProbeResult
+	doc   *openapi.Doc // nil when the spec was unchanged
+	err   error
+}
+
+func (c *Collector) pollAddress(ctx context.Context, client *discovery.Client,
+	svc store.Service, addr address, now time.Time, budget time.Duration) pollResult {
+
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	probe := store.ProbeResult{ServiceID: svc.ID, CheckedAt: now, UsingFallback: addr.fallback}
+
+	// A spec address learned on one host applies to the other: same service,
+	// same document, different way in.
+	specURL := specURLOn(svc.SpecURL, addr.baseURL)
+	if specURL != "" {
+		// Validators belong to the host that issued them. Switching addresses
+		// means downloading the document once, rather than trusting an ETag
+		// across a boundary it was never scoped to.
+		etag, lastMod := svc.ETag, svc.LastModified
+		if specURL != svc.SpecURL {
+			etag, lastMod = "", ""
+		}
+		doc, resp, err := c.fetchKnown(ctx, client, specURL, etag, lastMod)
 		switch {
 		case err != nil:
 			c.log.Info("known spec URL failed, rediscovering",
-				"service", svc.ID, "url", svc.SpecURL, "err", err)
-			_ = c.store.ClearSpecURL(ctx, svc.ID)
+				"service", svc.ID, "url", specURL, "err", err)
+			// Only forget the stored address when the primary attempt failed.
+			// On a fallback attempt the address is very likely still correct
+			// and simply unreachable from where we stand.
+			if !addr.fallback {
+				_ = c.store.ClearSpecURL(ctx, svc.ID)
+			}
 		case resp.NotModified:
 			probe.Status, probe.Succeeded, probe.AutoProbe = store.ProbeOK, true, true
-			probe.SpecURL, probe.ETag, probe.LastModified = svc.SpecURL, svc.ETag, svc.LastModified
-			c.record(ctx, probe)
-			return
+			probe.SpecURL, probe.ETag, probe.LastModified = specURL, svc.ETag, svc.LastModified
+			return pollResult{probe: probe}
 		default:
-			doc, cachedOK = fetched, true
-			probe.SpecURL, probe.ETag, probe.LastModified = svc.SpecURL, resp.ETag, resp.LastModified
+			probe.Status, probe.Succeeded, probe.AutoProbe = store.ProbeOK, true, true
+			probe.SpecURL, probe.ETag, probe.LastModified = specURL, resp.ETag, resp.LastModified
+			return pollResult{probe: probe, doc: doc}
 		}
 	}
 
-	if !cachedOK {
-		result, err := client.Discover(ctx, svc.BaseURL, svc.ManualSpecURL)
-		if err != nil {
-			probe.Status = classifyFailure(ctx, result)
-			probe.Error = err.Error()
-
-			// A service that answered and simply has no specification will not
-			// grow one on its own, so it leaves the automatic schedule
-			// entirely: someone has to supply an address and ask for a probe.
-			// An unreachable service is a different story — that is usually
-			// temporary, so it stays on the schedule and just backs off.
-			if probe.Status == store.ProbeNoSpec {
-				probe.AutoProbe = false
-				c.record(ctx, probe)
-				c.log.Warn("спецификация не найдена, автоматический опрос выключен",
-					"service", svc.ID, "name", svc.DisplayName, "err", err)
-				return
-			}
-
-			probe.AutoProbe = true
-			delay := backoff(settings, svc.FailCount)
-			next := now.Add(delay)
-			probe.NextProbeAt = &next
-			c.record(ctx, probe)
-			c.log.Warn("сервис недоступен", "service", svc.ID, "name", svc.DisplayName,
-				"status", probe.Status, "err", err, "retryIn", delay.String())
-			return
-		}
-		doc = result.Doc
-		probe.SpecURL, probe.SpecURLSource = result.SpecURL, result.Source
-		if result.Resp != nil {
-			probe.ETag, probe.LastModified = result.Resp.ETag, result.Resp.LastModified
-		}
-		c.log.Info("discovered spec", "service", svc.ID, "name", svc.DisplayName,
-			"url", result.SpecURL, "via", result.Source)
+	result, err := client.Discover(ctx, addr.baseURL, svc.ManualSpecURL)
+	if err != nil {
+		probe.Status = classifyFailure(ctx, result)
+		probe.Error = err.Error()
+		return pollResult{probe: probe, err: err}
 	}
 
 	// A successful probe puts the service back on the automatic schedule —
 	// this is what makes "enter the address, press probe" stick.
 	probe.Status, probe.Succeeded, probe.AutoProbe = store.ProbeOK, true, true
-	c.record(ctx, probe)
-
-	if err := c.storeRevision(ctx, svc, doc, now, settings); err != nil {
-		c.log.Error("store revision", "service", svc.ID, "err", err)
+	probe.SpecURL, probe.SpecURLSource = result.SpecURL, result.Source
+	if result.Resp != nil {
+		probe.ETag, probe.LastModified = result.Resp.ETag, result.Resp.LastModified
 	}
+	c.log.Info("discovered spec", "service", svc.ID, "name", svc.DisplayName,
+		"url", result.SpecURL, "via", result.Source, "fallback", addr.fallback)
+	return pollResult{probe: probe, doc: result.Doc}
 }
 
 func (c *Collector) fetchKnown(ctx context.Context, client *discovery.Client, url, etag, lastMod string) (*openapi.Doc, *discovery.Response, error) {
@@ -464,7 +597,17 @@ func (c *Collector) storeRevision(ctx context.Context, svc store.Service, doc *o
 	return nil
 }
 
+// record writes the outcome of a poll.
+//
+// It deliberately does not inherit the caller's context. The probe budget has
+// usually just expired by the time a failure gets here — that is what a
+// failure often *is* — and writing the result under the deadline that killed
+// the probe means the row is never updated at all. The service then shows as
+// last checked hours ago, which reads as "the poller is broken" rather than
+// "this service does not answer".
 func (c *Collector) record(ctx context.Context, p store.ProbeResult) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	if err := c.store.RecordProbe(ctx, p); err != nil {
 		c.log.Error("record probe", "service", p.ServiceID, "err", err)
 	}

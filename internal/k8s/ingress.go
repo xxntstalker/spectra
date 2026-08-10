@@ -187,7 +187,13 @@ func (c *Client) candidates(ing ingress) []candidate {
 			}
 			backend := fmt.Sprintf("%s.%s:%d", backendName, ing.Metadata.Namespace, port)
 
-			baseURL := c.baseURL(rule.Host, tlsHosts[rule.Host], backend, p.Path)
+			inCluster := "http://" + backend + trimPathSuffix(p.Path)
+			public := publicURL(rule.Host, tlsHosts[rule.Host], p.Path)
+
+			baseURL, fallbackURL := inCluster, public
+			if c.cfg.Target == config.TargetIngress {
+				baseURL, fallbackURL = public, inCluster
+			}
 
 			name := ing.Metadata.Annotations[annotationName]
 			explicit := name != ""
@@ -209,6 +215,7 @@ func (c *Client) candidates(ing ingress) []candidate {
 					Key:         backend + pathSuffix(p.Path),
 					DisplayName: name,
 					BaseURL:     baseURL,
+					FallbackURL: fallbackURL,
 					Host:        rule.Host,
 					Namespace:   ing.Metadata.Namespace,
 					IngressName: ing.Metadata.Name,
@@ -221,16 +228,17 @@ func (c *Client) candidates(ing ingress) []candidate {
 	return out
 }
 
-// baseURL decides who the portal actually talks to.
+// publicURL is the address a consumer of the API would use: the Ingress
+// hostname, over TLS when the Ingress declares a certificate for it.
 //
-// Going through the Ingress hostname from inside the cluster is unreliable:
-// split-horizon DNS may not resolve it at all, and when it does the request
-// usually leaves for the external load balancer and comes back in. Talking to
-// the backend Service is a plain in-cluster call.
-func (c *Client) baseURL(host string, secure bool, backend, path string) string {
-	if c.cfg.Target == config.TargetService {
-		return "http://" + backend + trimPathSuffix(path)
-	}
+// It is the fallback rather than the default, because reaching it from inside
+// the cluster is unreliable: split-horizon DNS may not resolve it at all, and
+// when it does the request usually leaves for the external load balancer and
+// comes back in. The backend Service is a plain in-cluster call. But when that
+// call cannot be made — a NetworkPolicy, a renamed Service, a port only the
+// ingress controller may reach — this address still answers, and the collector
+// falls back to it instead of calling the service dead.
+func publicURL(host string, secure bool, path string) string {
 	scheme := "http"
 	if secure {
 		scheme = "https"
