@@ -1,6 +1,10 @@
 # Spectra + Postgres. Реестр сервисов больше не файл — он в базе,
 # наполняется из Kubernetes (SPECTRA_K8S_*) или из SPECTRA_STATIC_SERVICES.
 #
+# Значения ниже — умолчания через ${VAR:-...}: без .env всё поднимается как
+# есть, а `cp .env.example .env` переопределяет их, не трогая этот файл.
+# Полное описание переменных — в .env.example.
+#
 # Демо-стенд целиком: docker compose -f demo/docker-compose.yml up --build
 
 services:
@@ -24,16 +28,20 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      SPECTRA_DATABASE_URL: postgres://spectra:spectra@postgres:5432/spectra?sslmode=disable
-      SPECTRA_LOG_LEVEL: info
+      SPECTRA_DATABASE_URL: ${SPECTRA_DATABASE_URL:-postgres://spectra:spectra@postgres:5432/spectra?sslmode=disable}
+      SPECTRA_LOG_LEVEL: ${SPECTRA_LOG_LEVEL:-info}
       # Вне кластера дискавери из куба выключается само; включится в поде,
       # где смонтирован ServiceAccount.
-      SPECTRA_K8S_ENABLED: "false"
+      SPECTRA_K8S_ENABLED: "${SPECTRA_K8S_ENABLED:-false}"
       # Прокси для Try it out. Учтите: у портала нет своей аутентификации,
       # а этот API теперь умеет писать — включайте только за SSO.
-      SPECTRA_PROXY_ENABLED: "false"
+      SPECTRA_PROXY_ENABLED: "${SPECTRA_PROXY_ENABLED:-false}"
+      # Чем наполнить реестр вне кластера. Пусто — портал поднимется пустым.
+      SPECTRA_STATIC_SERVICES: ${SPECTRA_STATIC_SERVICES:-}
+      SPECTRA_ADMIN_USER: ${SPECTRA_ADMIN_USER:-}
+      SPECTRA_ADMIN_PASSWORD: ${SPECTRA_ADMIN_PASSWORD:-}
     ports:
-      - "8080:8080"
+      - "${SPECTRA_PORT:-8080}:8080"
     restart: unless-stopped
 
 volumes:
