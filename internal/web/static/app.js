@@ -291,6 +291,7 @@ function renderSidebar() {
 /* ---------- services list ---------- */
 
 function matchesFilter(svc) {
+  if (state.stateFilter === 'noOwner' && (svc.owner?.team || svc.owner?.contact)) return false;
   if (state.stateFilter === 'manualOnly' && (svc.autoProbe !== false)) return false;
   if (state.stateFilter === 'withSpec' && svc.probeStatus !== 'ok') return false;
   if (state.stateFilter === 'noSpec' && svc.probeStatus === 'ok') return false;
@@ -324,6 +325,9 @@ function urlRow(svc) {
         ${badges}
       </td>
       <td class="addr">${address ? esc(address) : '<span class="muted">—</span>'}</td>
+      <td class="owner-cell">${svc.owner?.team
+        ? esc(svc.owner.team)
+        : '<span class="muted">—</span>'}</td>
       <td class="num">${svc.probeStatus === 'ok' ? svc.endpointCount : ''}</td>
       <td>${spec}</td>
     </tr>`;
@@ -360,6 +364,7 @@ function renderURLs() {
         ${chip('', 'все', (counts.total || 0) - (counts.hidden || 0))}
         ${chip('withSpec', 'со спецификацией', counts.withSpec)}
         ${chip('noSpec', 'без спецификации', (counts.noSpec || 0) + (counts.unreachable || 0))}
+        ${chip('noOwner', 'без владельца', counts.noOwner)}
         ${isAdmin() ? chip('manualOnly', 'только вручную', counts.manualOnly) : ''}
         ${isAdmin() ? chip('ignored', 'спрятанные', counts.hidden) : ''}
         ${isAdmin() ? '<button class="btn small" id="sync-now" style="margin-left:auto">Пересканировать кластер</button>' : ''}
@@ -368,7 +373,7 @@ function renderURLs() {
       ${visible.length ? [...groups.entries()].map(([name, list]) => `
         <h2 class="group">${esc(name)} <span class="muted">${list.length}</span></h2>
         <table class="urls">
-          <thead><tr><th></th><th>Сервис</th><th>Адрес</th><th>Эндп.</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Сервис</th><th>Адрес</th><th>Команда</th><th>Эндп.</th><th></th></tr></thead>
           <tbody>${list.map(urlRow).join('')}</tbody>
         </table>`).join('') : '<div class="empty">Ничего не найдено</div>'}
     </div>`;
@@ -476,6 +481,7 @@ function serviceHeader(svc, tab) {
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
+      ${ownerBlock(svc)}
       <ul class="facts">
         <li>статус: <b>${esc(PROBE_LABEL[svc.probeStatus] || svc.probeStatus)}</b></li>
         <li>обновлено: <b title="${esc(absolute(svc.updatedAt))}">${esc(ago(svc.updatedAt))}</b></li>
@@ -491,6 +497,28 @@ function serviceHeader(svc, tab) {
         ${isAdmin() ? `<a class="tab ${tab === 'config' ? 'active' : ''}" href="${base}/config">Настройка</a>` : ''}
       </div>
     </div>`;
+}
+
+// The owner block is shown even when empty: an explicit "владелец не указан"
+// with a link to fill it in is what turns a blank field into something anyone
+// actually does. A hidden field nobody sees stays empty forever.
+function ownerBlock(svc) {
+  const o = svc.owner || {};
+  if (!o.team && !o.contact && !o.repo && !(o.owners || []).length) {
+    return `<p class="owner empty">Владелец не указан${
+      isAdmin() ? ` · <a href="#/s/${svc.id}/config">указать</a>` : ''}</p>`;
+  }
+  const parts = [];
+  if (o.team) parts.push(`<b>${esc(o.team)}</b>`);
+  if ((o.owners || []).length) parts.push(esc(o.owners.join(', ')));
+  if (o.contact) {
+    parts.push(o.contact.includes('@')
+      ? `<a href="mailto:${esc(o.contact)}">${esc(o.contact)}</a>`
+      : esc(o.contact));
+  }
+  if (o.repo) parts.push(`<a href="${esc(o.repo)}" target="_blank" rel="noopener">исходный код</a>`);
+  const from = o.source === 'spec' ? ' <span class="muted">— из спецификации</span>' : '';
+  return `<p class="owner">${parts.join(' · ')}${from}</p>`;
 }
 
 function bindProbe(svc) {
@@ -574,6 +602,22 @@ function renderConfig(svc) {
         и такой адрес стал бы способом дотянуться до чего угодно.
         ${!svc.autoProbe ? '<br><b>Сейчас автоопрос выключен:</b> сохраните адрес и нажмите «Опросить сейчас». Если спека найдётся, опрос снова пойдёт по расписанию.' : ''}</span>
       </label>
+      <h3 class="form-section">Владелец</h3>
+      <p class="muted">Кого спросить про этот API и где лежит код. Если команда
+      однажды пропишет контакты в самой спецификации (<code>info.contact</code>,
+      <code>externalDocs</code>) или в аннотациях Ingress, они подтянутся сюда
+      сами — но заполненное здесь всегда важнее.</p>
+      <label>Команда<input name="ownerTeam" value="${esc(svc.owner?.manual?.team || '')}"
+        placeholder="${esc(svc.owner?.source === 'spec' && svc.owner?.team ? svc.owner.team + ' (из спецификации)' : 'Профиль и авторизация')}"></label>
+      <label>Контакт <span class="muted">почта или чат</span>
+        <input name="ownerContact" value="${esc(svc.owner?.manual?.contact || '')}"
+          placeholder="${esc(svc.owner?.source === 'spec' && svc.owner?.contact ? svc.owner.contact + ' (из спецификации)' : 'team@company.ru или #team-profile')}"></label>
+      <label>Исходный код<input name="ownerRepo" value="${esc(svc.owner?.manual?.repo || '')}"
+        placeholder="${esc(svc.owner?.source === 'spec' && svc.owner?.repo ? svc.owner.repo + ' (из спецификации)' : 'https://gitlab.company.ru/...')}"></label>
+      <label>Люди <span class="muted">через запятую</span>
+        <input name="ownerOwners" value="${esc((svc.owner?.manual?.owners || []).join(', '))}"></label>
+
+      <h3 class="form-section">Прочее</h3>
       <label>Заметка<textarea name="notes" rows="2">${esc(svc.notes || '')}</textarea></label>
       <label class="check">
         <input type="checkbox" name="ignored" ${svc.reviewState === 'ignored' ? 'checked' : ''}>
@@ -592,6 +636,12 @@ function renderConfig(svc) {
       notes: form.get('notes'),
       tags: form.get('tags').split(',').map(t => t.trim()).filter(Boolean),
       manualSpecUrl: form.get('manualSpecUrl').trim(),
+      owner: {
+        team: form.get('ownerTeam'),
+        contact: form.get('ownerContact'),
+        repo: form.get('ownerRepo'),
+        owners: form.get('ownerOwners').split(',').map(o => o.trim()).filter(Boolean),
+      },
       reviewState: form.get('ignored') ? 'ignored' : 'reviewed',
     };
     const groupId = form.get('groupId');

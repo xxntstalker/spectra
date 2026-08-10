@@ -18,6 +18,8 @@ type Discovered struct {
 	// owns a service declares these itself, next to its own manifests.
 	SpecURL string
 	Group   string
+	// Owner declared on the Ingress by the team that owns the service.
+	Owner OwnerFields
 }
 
 // SyncResult reports what a sweep changed.
@@ -124,6 +126,22 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 			res.Added++
 			res.AddedNames = append(res.AddedNames, item.DisplayName)
 		}
+		// Annotations are a discovered source: they fill the spec_* columns and
+		// leave anything a person entered alone.
+		if item.Owner.Team != "" || item.Owner.Contact != "" ||
+			item.Owner.Repo != "" || len(item.Owner.Owners) > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE services SET
+					spec_team = COALESCE(NULLIF($2,''), spec_team),
+					spec_contact = COALESCE(NULLIF($3,''), spec_contact),
+					spec_repo = COALESCE(NULLIF($4,''), spec_repo),
+					spec_owners = CASE WHEN $5::text[] <> '{}' THEN $5::text[] ELSE spec_owners END
+				WHERE key = $1`,
+				item.Key, item.Owner.Team, item.Owner.Contact,
+				item.Owner.Repo, item.Owner.Owners); err != nil {
+				return res, err
+			}
+		}
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -206,6 +224,7 @@ type Counts struct {
 	NoSpec      int `json:"noSpec"`
 	Unreachable int `json:"unreachable"`
 	Hidden      int `json:"hidden"`
+	NoOwner     int `json:"noOwner"`
 	ManualOnly  int `json:"manualOnly"`
 	Gone        int `json:"gone"`
 }
@@ -220,9 +239,13 @@ func (s *Store) Counts(ctx context.Context) (Counts, error) {
 			count(*) FILTER (WHERE probe_status = $4 AND review_state <> $3),
 			count(*) FILTER (WHERE review_state = $3),
 			count(*) FILTER (WHERE NOT auto_probe AND review_state <> $3),
-			count(*) FILTER (WHERE NOT present)
+			count(*) FILTER (WHERE NOT present),
+			count(*) FILTER (WHERE review_state <> $3
+				AND COALESCE(NULLIF(manual_team,''), NULLIF(spec_team,''),
+				             NULLIF(manual_contact,''), NULLIF(spec_contact,'')) IS NULL)
 		FROM services`,
 		ProbeOK, ProbeNoSpec, ReviewIgnored, ProbeUnreachable).
-		Scan(&c.Total, &c.WithSpec, &c.NoSpec, &c.Unreachable, &c.Hidden, &c.ManualOnly, &c.Gone)
+		Scan(&c.Total, &c.WithSpec, &c.NoSpec, &c.Unreachable, &c.Hidden, &c.ManualOnly,
+			&c.Gone, &c.NoOwner)
 	return c, err
 }

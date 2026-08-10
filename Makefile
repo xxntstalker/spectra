@@ -47,7 +47,24 @@ image:
 
 # --- разработка -----------------------------------------------------------
 
+# Половина логики store живёт в SQL, поэтому тестам нужен настоящий Postgres.
+# Он поднимается одноразовым контейнером и гасится после прогона.
 test:
+	@docker rm -f spectra-test-pg >/dev/null 2>&1 || true
+	@docker run -d --name spectra-test-pg \
+		-e POSTGRES_USER=spectra -e POSTGRES_PASSWORD=spectra -e POSTGRES_DB=spectra_test \
+		-p 55432:5432 postgres:17-alpine >/dev/null
+	@printf "жду Postgres"; \
+	for i in $$(seq 1 40); do \
+		docker exec spectra-test-pg pg_isready -U spectra -d spectra_test 2>/dev/null | grep -q accepting && break; \
+		printf "."; sleep 1; \
+	done; echo
+	-@SPECTRA_TEST_DATABASE_URL='postgres://spectra:spectra@localhost:55432/spectra_test?sslmode=disable' \
+		go test ./...
+	@docker rm -f spectra-test-pg >/dev/null 2>&1 || true
+
+# Тесты без Postgres: те, которым он нужен, пропускаются.
+test-quick:
 	go test ./...
 
 fmt:

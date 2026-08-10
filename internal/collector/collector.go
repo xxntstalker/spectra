@@ -383,6 +383,16 @@ func (c *Collector) storeRevision(ctx context.Context, svc store.Service, doc *o
 	}
 	index := normalized.BuildIndex()
 
+	// Contacts declared in the specification are stored on every successful
+	// poll, not only when the contract changes: a team may add them without
+	// touching a single endpoint.
+	owner := doc.Owner()
+	if err := c.store.SetDiscoveredOwner(ctx, svc.ID, store.OwnerFields{
+		Team: owner.Team, Contact: owner.Contact, Repo: owner.Repo, Owners: owner.Owners,
+	}); err != nil {
+		c.log.Error("сохранение владельца из спеки", "service", svc.ID, "err", err)
+	}
+
 	// A contract identical to one seen before is a rolled-back deploy, not a
 	// new change. Recorded as such so the feed says what happened instead of
 	// re-listing the endpoints as if they had just moved.

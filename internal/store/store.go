@@ -295,6 +295,37 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 
 // ---------------------------------------------------------------- services --
 
+// Owner answers "кого спросить" and "где код".
+//
+// Two origins, resolved per field: what a person typed wins over what a sweep
+// found. In the first months nothing will be declared anywhere, so the manual
+// entry is the primary path, not the fallback — and "у кого владельца нет"
+// is what makes the gap visible enough to close.
+type Owner struct {
+	Team    string   `json:"team,omitempty"`
+	Contact string   `json:"contact,omitempty"`
+	Repo    string   `json:"repo,omitempty"`
+	Owners  []string `json:"owners"`
+	// Source is "manual", "spec" or empty when nothing is known.
+	Source string `json:"source,omitempty"`
+	// Manual holds what a person entered, so the edit form shows their values
+	// rather than the resolved ones.
+	Manual OwnerFields `json:"manual"`
+}
+
+// OwnerFields is the raw manual entry.
+type OwnerFields struct {
+	Team    string   `json:"team"`
+	Contact string   `json:"contact"`
+	Repo    string   `json:"repo"`
+	Owners  []string `json:"owners"`
+}
+
+// Known reports whether anything at all is known about the owner.
+func (o Owner) Known() bool {
+	return o.Team != "" || o.Contact != "" || o.Repo != "" || len(o.Owners) > 0
+}
+
 // Service is a registry entry joined with the state of its newest revision.
 type Service struct {
 	ID          int64    `json:"id"`
@@ -313,6 +344,10 @@ type Service struct {
 	GroupName   string   `json:"groupName,omitempty"`
 	Tags        []string `json:"tags"`
 	Notes       string   `json:"notes,omitempty"`
+
+	// Owner is who to ask about this service. Manual values win over anything
+	// the sweep discovered, per field.
+	Owner Owner `json:"owner"`
 
 	SpecURL       string `json:"specUrl,omitempty"`
 	SpecURLSource string `json:"specUrlSource,omitempty"`
@@ -352,6 +387,19 @@ const serviceColumns = `
 	s.group_id, COALESCE(g.name,''), s.tags, s.notes,
 	COALESCE(s.spec_url,''), COALESCE(s.spec_url_source,''), COALESCE(s.manual_spec_url,''), s.last_error,
 	COALESCE(s.etag,''), COALESCE(s.last_modified,''),
+	COALESCE(NULLIF(s.manual_team,''),    NULLIF(s.spec_team,''),    ''),
+	COALESCE(NULLIF(s.manual_contact,''), NULLIF(s.spec_contact,''), ''),
+	COALESCE(NULLIF(s.manual_repo,''),    NULLIF(s.spec_repo,''),    ''),
+	COALESCE(NULLIF(s.manual_owners,'{}'), s.spec_owners, '{}'),
+	CASE WHEN COALESCE(NULLIF(s.manual_team,''), NULLIF(s.manual_contact,''),
+	                   NULLIF(s.manual_repo,''),
+	                   CASE WHEN s.manual_owners <> '{}' THEN 'x' END) IS NOT NULL
+	     THEN 'manual'
+	     WHEN COALESCE(NULLIF(s.spec_team,''), NULLIF(s.spec_contact,''),
+	                   NULLIF(s.spec_repo,'')) IS NOT NULL THEN 'spec'
+	     ELSE '' END,
+	COALESCE(s.manual_team,''), COALESCE(s.manual_contact,''),
+	COALESCE(s.manual_repo,''), COALESCE(s.manual_owners,'{}'),
 	s.last_checked_at, s.last_success_at, s.first_seen_at, s.last_seen_at,
 	s.acknowledged_at, s.next_probe_at, s.fail_count, s.auto_probe,
 	COALESCE(v.id,0), v.captured_at, COALESCE(v.title,''), COALESCE(v.api_version,''),
@@ -375,6 +423,8 @@ func scanService(row pgx.Row) (Service, error) {
 		&groupID, &s.GroupName, &s.Tags, &s.Notes,
 		&s.SpecURL, &s.SpecURLSource, &s.ManualSpecURL, &s.LastError,
 		&s.ETag, &s.LastModified,
+		&s.Owner.Team, &s.Owner.Contact, &s.Owner.Repo, &s.Owner.Owners, &s.Owner.Source,
+		&s.Owner.Manual.Team, &s.Owner.Manual.Contact, &s.Owner.Manual.Repo, &s.Owner.Manual.Owners,
 		&s.LastCheckedAt, &s.LastSuccessAt, &s.FirstSeenAt, &s.LastSeenAt,
 		&s.AcknowledgedAt, &s.NextProbeAt, &s.FailCount, &s.AutoProbe,
 		&s.VersionID, &s.UpdatedAt, &s.Title, &s.APIVersion,
@@ -382,6 +432,12 @@ func scanService(row pgx.Row) (Service, error) {
 	s.GroupID = groupID
 	if s.Tags == nil {
 		s.Tags = []string{}
+	}
+	if s.Owner.Owners == nil {
+		s.Owner.Owners = []string{}
+	}
+	if s.Owner.Manual.Owners == nil {
+		s.Owner.Manual.Owners = []string{}
 	}
 	return s, err
 }
@@ -454,6 +510,8 @@ type ServiceUpdate struct {
 	Notes         *string
 	ReviewState   *string
 	ManualSpecURL *string
+	// Owner is what a person typed. Nil leaves it alone; empty strings clear it.
+	Owner *OwnerFields
 }
 
 func (s *Store) UpdateService(ctx context.Context, id int64, u ServiceUpdate) error {
@@ -480,6 +538,12 @@ func (s *Store) UpdateService(ctx context.Context, id int64, u ServiceUpdate) er
 		// Any explicit decision counts as having looked at the service, so the
 		// "new" badge clears without a separate click.
 		sets = append(sets, "acknowledged_at = COALESCE(acknowledged_at, now())")
+	}
+	if u.Owner != nil {
+		add("manual_team", u.Owner.Team)
+		add("manual_contact", u.Owner.Contact)
+		add("manual_repo", u.Owner.Repo)
+		add("manual_owners", u.Owner.Owners)
 	}
 	if u.ManualSpecURL != nil {
 		add("manual_spec_url", *u.ManualSpecURL)
@@ -546,6 +610,18 @@ func (s *Store) RecordProbe(ctx context.Context, p ProbeResult) error {
 		WHERE id = $1`,
 		p.ServiceID, p.Status, p.Error, p.CheckedAt, p.Succeeded,
 		p.SpecURL, p.SpecURLSource, p.ETag, p.LastModified, p.NextProbeAt, p.AutoProbe)
+	return err
+}
+
+// SetDiscoveredOwner stores what a specification or an annotation declared.
+// It never touches the manual columns, so a person's entry always wins.
+func (s *Store) SetDiscoveredOwner(ctx context.Context, id int64, o OwnerFields) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE services SET
+			spec_team = NULLIF($2,''), spec_contact = NULLIF($3,''),
+			spec_repo = NULLIF($4,''), spec_owners = $5,
+			updated_at = now()
+		WHERE id = $1`, id, o.Team, o.Contact, o.Repo, o.Owners)
 	return err
 }
 

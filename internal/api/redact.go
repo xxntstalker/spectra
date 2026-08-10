@@ -24,6 +24,8 @@ func redactService(s store.Service) store.Service {
 	s.ManualSpecURL = ""
 	// Probe errors quote the addresses that were tried.
 	s.LastError = ""
+	// Owner deliberately stays: "кого спросить про этот API" is the question
+	// a visitor comes with, and a team name with a contact is not topology.
 	// LastCheckedAt deliberately stays: it is how a reader judges whether the
 	// specification in front of them is still what the service serves. That
 	// question belongs to everyone, and a timestamp reveals no topology.

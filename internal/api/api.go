@@ -148,13 +148,21 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 }
 
 type servicePatch struct {
-	DisplayName   *string   `json:"displayName"`
-	GroupID       *int64    `json:"groupId"`
-	ClearGroup    bool      `json:"clearGroup"`
-	Tags          *[]string `json:"tags"`
-	Notes         *string   `json:"notes"`
-	ReviewState   *string   `json:"reviewState"`
-	ManualSpecURL *string   `json:"manualSpecUrl"`
+	DisplayName   *string    `json:"displayName"`
+	GroupID       *int64     `json:"groupId"`
+	ClearGroup    bool       `json:"clearGroup"`
+	Tags          *[]string  `json:"tags"`
+	Notes         *string    `json:"notes"`
+	ReviewState   *string    `json:"reviewState"`
+	ManualSpecURL *string    `json:"manualSpecUrl"`
+	Owner         *ownerBody `json:"owner"`
+}
+
+type ownerBody struct {
+	Team    string   `json:"team"`
+	Contact string   `json:"contact"`
+	Repo    string   `json:"repo"`
+	Owners  []string `json:"owners"`
 }
 
 func (s *Server) patchService(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +195,18 @@ func (s *Server) patchService(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.fail(w, http.StatusBadRequest, errors.New("неизвестное состояние: "+*body.ReviewState))
 			return
+		}
+	}
+	if body.Owner != nil {
+		owners := body.Owner.Owners
+		if owners == nil {
+			owners = []string{}
+		}
+		update.Owner = &store.OwnerFields{
+			Team:    strings.TrimSpace(body.Owner.Team),
+			Contact: strings.TrimSpace(body.Owner.Contact),
+			Repo:    strings.TrimSpace(body.Owner.Repo),
+			Owners:  owners,
 		}
 	}
 	if body.ManualSpecURL != nil {

@@ -368,3 +368,9 @@ table.urls td.num { text-align: right; color: var(--muted); width: 60px; }
 #theme { min-width: 34px; }
 
 .badge.rollback { background: var(--panel-alt); border-color: var(--warn); color: var(--warn); }
+
+/* Владелец сервиса */
+.owner { margin: 0 0 10px; font-size: 13px; }
+.owner.empty { color: var(--muted); }
+.form-section { margin: 18px 0 -4px; font-size: 13.5px; }
+table.urls td.owner-cell { color: var(--muted); font-size: 12.5px; }

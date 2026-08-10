@@ -90,6 +90,10 @@ const (
 	annotationSpecURL = "spectra.io/spec-url"
 	annotationName    = "spectra.io/name"
 	annotationGroup   = "spectra.io/group"
+	annotationTeam    = "spectra.io/team"
+	annotationContact = "spectra.io/contact"
+	annotationRepo    = "spectra.io/repo"
+	annotationOwners  = "spectra.io/owners"
 )
 
 // Discover lists ingresses and turns them into registry candidates.
@@ -328,6 +332,17 @@ func (c *Client) listIngresses(ctx context.Context) (*ingressList, error) {
 		return nil, fmt.Errorf("decode ingress list: %w", err)
 	}
 	return &list, nil
+}
+
+// splitList reads a comma-separated annotation value.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func contains(list []string, v string) bool {
