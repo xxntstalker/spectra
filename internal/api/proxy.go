@@ -42,6 +42,7 @@ func (s *Server) proxyHandler() http.Handler {
 			return
 		}
 
+		stripLogin := s.isPortalCredential(r)
 		reverse := &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
@@ -49,6 +50,13 @@ func (s *Server) proxyHandler() http.Handler {
 				// The portal's own cookies mean nothing upstream and must not
 				// leak across services.
 				pr.Out.Header.Del("Cookie")
+				// Neither does the portal's own login: forwarding it would put
+				// the admin password into the access log of every service
+				// somebody tries out. A token the user supplied for the API
+				// itself is left alone.
+				if stripLogin {
+					pr.Out.Header.Del("Authorization")
+				}
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				s.log.Warn("proxy error", "service", id, "path", r.URL.Path, "err", err)

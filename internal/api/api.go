@@ -377,12 +377,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings := store.DefaultSettings()
-	parse := func(name, raw string, target *time.Duration) error {
+	// allowZero is true only for the probe delay, where zero means "do not
+	// pace" — everywhere else zero would mean "never" or "immediately".
+	parse := func(name, raw string, target *time.Duration, allowZero bool) error {
 		if raw == "" {
 			return nil
 		}
 		d, err := time.ParseDuration(raw)
-		if err != nil || d <= 0 {
+		if err != nil || d < 0 || (d == 0 && !allowZero) {
 			return errors.New(name + ": ожидается длительность, например 1h или 30s")
 		}
 		*target = d
@@ -391,14 +393,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	for _, item := range []struct {
 		name, raw string
 		target    *time.Duration
+		allowZero bool
 	}{
-		{"pollInterval", body.PollInterval, &settings.PollInterval},
-		{"requestTimeout", body.RequestTimeout, &settings.RequestTimeout},
-		{"probeBudget", body.ProbeBudget, &settings.ProbeBudget},
-		{"probeDelay", body.ProbeDelay, &settings.ProbeDelay},
-		{"maxBackoff", body.MaxBackoff, &settings.MaxBackoff},
+		{"pollInterval", body.PollInterval, &settings.PollInterval, false},
+		{"requestTimeout", body.RequestTimeout, &settings.RequestTimeout, false},
+		{"probeBudget", body.ProbeBudget, &settings.ProbeBudget, false},
+		{"probeDelay", body.ProbeDelay, &settings.ProbeDelay, true},
+		{"maxBackoff", body.MaxBackoff, &settings.MaxBackoff, false},
 	} {
-		if err := parse(item.name, item.raw, item.target); err != nil {
+		if err := parse(item.name, item.raw, item.target, item.allowZero); err != nil {
 			s.fail(w, http.StatusBadRequest, err)
 			return
 		}

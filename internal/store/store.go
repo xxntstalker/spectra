@@ -236,9 +236,20 @@ func (s *Store) LoadSettings(ctx context.Context) (Settings, error) {
 
 	// Unparseable values fall back to the default rather than failing the
 	// whole load: one bad row must not take the portal down.
+	// Zero is not a valid interval or timeout — it would mean "never" or
+	// "immediately" — so a non-positive value there falls back to the default.
 	dur := func(key string, target *time.Duration) {
 		if raw, ok := stored[key]; ok {
 			if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+				*target = d
+			}
+		}
+	}
+	// The probe delay is the exception: zero is a meaningful setting there —
+	// "do not pace at all" — and the settings page says so.
+	durAllowZero := func(key string, target *time.Duration) {
+		if raw, ok := stored[key]; ok {
+			if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
 				*target = d
 			}
 		}
@@ -253,7 +264,7 @@ func (s *Store) LoadSettings(ctx context.Context) (Settings, error) {
 	dur("poll_interval", &out.PollInterval)
 	dur("request_timeout", &out.RequestTimeout)
 	dur("probe_budget", &out.ProbeBudget)
-	dur("probe_delay", &out.ProbeDelay)
+	durAllowZero("probe_delay", &out.ProbeDelay)
 	dur("max_backoff", &out.MaxBackoff)
 	num("concurrency", &out.Concurrency)
 	num("retain_versions", &out.RetainVersions)

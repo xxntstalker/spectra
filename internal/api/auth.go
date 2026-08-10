@@ -56,6 +56,21 @@ func (s *Server) checkAdmin(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// isPortalCredential reports whether the Authorization header on this request
+// is the portal's own login.
+//
+// It exists so the proxy can strip it before forwarding. The header was meant
+// for Spectra, not for the service behind it — without this the admin password
+// lands in the access log of every service anyone tries out, where its owner,
+// and anyone who can read those logs, would find it.
+//
+// Any other Authorization passes through untouched: "Try it out" against an
+// API that needs a token has to keep working.
+func (s *Server) isPortalCredential(r *http.Request) bool {
+	user, password, ok := r.BasicAuth()
+	return ok && equal(user, s.cfg.Admin.User) && equal(password, s.cfg.Admin.Password)
+}
+
 // equal compares in constant time so that a wrong password cannot be found by
 // measuring how long the comparison took.
 func equal(a, b string) bool {
