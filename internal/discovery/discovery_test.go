@@ -194,3 +194,54 @@ func TestGetHonoursConditionalRequests(t *testing.T) {
 		t.Error("expected 304 to be reported as NotModified")
 	}
 }
+
+// A service that ignores conditional requests answers 200 with the whole
+// document every time. Nothing breaks — the revision hash still suppresses
+// duplicates — but the body crosses the network on every poll, so it had
+// better be compressed.
+func TestClientAcceptsCompression(t *testing.T) {
+	var accepted string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accepted = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(miniSpec))
+	}))
+	defer server.Close()
+
+	if _, err := testClient().Get(context.Background(), server.URL+"/openapi.json", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The transport adds this itself and decompresses transparently, as long as
+	// we do not set Accept-Encoding ourselves. Setting it would silently turn
+	// compression off and make every poll carry the full document.
+	if !strings.Contains(accepted, "gzip") {
+		t.Errorf("Accept-Encoding = %q, want gzip", accepted)
+	}
+}
+
+// Conditional headers must only go out once there is something to validate
+// against; sending an empty If-None-Match would be a malformed request.
+func TestConditionalHeadersOnlyWhenKnown(t *testing.T) {
+	var sawIfNoneMatch, sawIfModifiedSince bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawIfNoneMatch = r.Header["If-None-Match"]
+		_, sawIfModifiedSince = r.Header["If-Modified-Since"]
+		w.Write([]byte(miniSpec))
+	}))
+	defer server.Close()
+
+	client := testClient()
+	if _, err := client.Get(context.Background(), server.URL+"/openapi.json", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if sawIfNoneMatch || sawIfModifiedSince {
+		t.Error("conditional headers sent with no stored validators")
+	}
+
+	if _, err := client.Get(context.Background(), server.URL+"/openapi.json", `"v1"`, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !sawIfNoneMatch {
+		t.Error("If-None-Match not sent when an ETag is known")
+	}
+}
