@@ -190,6 +190,8 @@ type Settings struct {
 	PollInterval   time.Duration `json:"pollInterval"`
 	RequestTimeout time.Duration `json:"requestTimeout"`
 	ProbeBudget    time.Duration `json:"probeBudget"`
+	// ProbeDelay paces requests against one service during discovery.
+	ProbeDelay     time.Duration `json:"probeDelay"`
 	MaxBackoff     time.Duration `json:"maxBackoff"`
 	Concurrency    int           `json:"concurrency"`
 	RetainVersions int           `json:"retainVersions"`
@@ -203,6 +205,7 @@ func DefaultSettings() Settings {
 		PollInterval:   time.Hour,
 		RequestTimeout: 10 * time.Second,
 		ProbeBudget:    2 * time.Minute,
+		ProbeDelay:     200 * time.Millisecond,
 		MaxBackoff:     6 * time.Hour,
 		Concurrency:    8,
 		RetainVersions: 100,
@@ -250,6 +253,7 @@ func (s *Store) LoadSettings(ctx context.Context) (Settings, error) {
 	dur("poll_interval", &out.PollInterval)
 	dur("request_timeout", &out.RequestTimeout)
 	dur("probe_budget", &out.ProbeBudget)
+	dur("probe_delay", &out.ProbeDelay)
 	dur("max_backoff", &out.MaxBackoff)
 	num("concurrency", &out.Concurrency)
 	num("retain_versions", &out.RetainVersions)
@@ -272,6 +276,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 		{"poll_interval", v.PollInterval.String()},
 		{"request_timeout", v.RequestTimeout.String()},
 		{"probe_budget", v.ProbeBudget.String()},
+		{"probe_delay", v.ProbeDelay.String()},
 		{"max_backoff", v.MaxBackoff.String()},
 		{"concurrency", strconv.Itoa(v.Concurrency)},
 		{"retain_versions", strconv.Itoa(v.RetainVersions)},

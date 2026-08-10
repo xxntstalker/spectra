@@ -689,6 +689,9 @@ async function renderSettings() {
         <label>Таймаут запроса<input name="requestTimeout" value="${esc(settings.requestTimeout)}"></label>
         <label>Бюджет на опрос сервиса<input name="probeBudget" value="${esc(settings.probeBudget)}">
           <span class="muted">Автопоиск делает до 45 запросов; должен быть заметно больше таймаута.</span></label>
+        <label>Пауза между попытками<input name="probeDelay" value="${esc(settings.probeDelay)}">
+          <span class="muted">Разносит запросы к одному сервису во времени. Без неё автопоиск
+          шлёт до 45 запросов за секунду — для WAF это выглядит как сканирование.</span></label>
         <label>Потолок паузы<input name="maxBackoff" value="${esc(settings.maxBackoff)}">
           <span class="muted">Пауза удваивается от интервала после каждой неудачи.</span></label>
         <label>Параллелизм<input name="concurrency" type="number" min="1" value="${settings.concurrency}"></label>
@@ -736,6 +739,7 @@ async function renderSettings() {
           pollInterval: form.get('pollInterval'),
           requestTimeout: form.get('requestTimeout'),
           probeBudget: form.get('probeBudget'),
+          probeDelay: form.get('probeDelay'),
           maxBackoff: form.get('maxBackoff'),
           concurrency: Number(form.get('concurrency')),
           retainVersions: Number(form.get('retainVersions')),

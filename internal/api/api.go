@@ -344,6 +344,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		PollInterval   string   `json:"pollInterval"`
 		RequestTimeout string   `json:"requestTimeout"`
 		ProbeBudget    string   `json:"probeBudget"`
+		ProbeDelay     string   `json:"probeDelay"`
 		MaxBackoff     string   `json:"maxBackoff"`
 		Concurrency    int      `json:"concurrency"`
 		RetainVersions int      `json:"retainVersions"`
@@ -374,6 +375,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{"pollInterval", body.PollInterval, &settings.PollInterval},
 		{"requestTimeout", body.RequestTimeout, &settings.RequestTimeout},
 		{"probeBudget", body.ProbeBudget, &settings.ProbeBudget},
+		{"probeDelay", body.ProbeDelay, &settings.ProbeDelay},
 		{"maxBackoff", body.MaxBackoff, &settings.MaxBackoff},
 	} {
 		if err := parse(item.name, item.raw, item.target); err != nil {
@@ -417,6 +419,7 @@ func settingsJSON(v store.Settings) map[string]any {
 		"pollInterval":   v.PollInterval.String(),
 		"requestTimeout": v.RequestTimeout.String(),
 		"probeBudget":    v.ProbeBudget.String(),
+		"probeDelay":     v.ProbeDelay.String(),
 		"maxBackoff":     v.MaxBackoff.String(),
 		"concurrency":    v.Concurrency,
 		"retainVersions": v.RetainVersions,

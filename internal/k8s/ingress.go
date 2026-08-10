@@ -18,7 +18,6 @@ import (
 	"net/url"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -306,13 +305,22 @@ func (c *Client) listIngresses(ctx context.Context) (*ingressList, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		// 403 here almost always means the RBAC rule is missing, so say that
-		// rather than dumping a raw status.
-		if resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("the ServiceAccount may not list ingresses (HTTP 403); "+
-				"grant list on ingresses.networking.k8s.io: %s", strconv.Quote(truncate(string(body), 300)))
+		reason := apiServerMessage(body)
+		switch resp.StatusCode {
+		case http.StatusForbidden:
+			// The most likely failure in a real cluster, and the one an
+			// operator can fix in a minute — so name the fix, not the status.
+			return nil, fmt.Errorf("нет прав на чтение Ingress (HTTP 403). "+
+				"Выдайте ServiceAccount право list на ingresses.networking.k8s.io "+
+				"(ClusterRole, либо Role в нужных namespace + SPECTRA_K8S_NAMESPACES). "+
+				"Ответ API-сервера: %s", reason)
+		case http.StatusUnauthorized:
+			return nil, fmt.Errorf("токен ServiceAccount не принят (HTTP 401). "+
+				"Проверьте serviceAccountName в поде. Ответ API-сервера: %s", reason)
+		default:
+			return nil, fmt.Errorf("не удалось получить список Ingress: HTTP %d: %s",
+				resp.StatusCode, reason)
 		}
-		return nil, fmt.Errorf("list ingresses: HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
 	}
 
 	var list ingressList
@@ -329,6 +337,19 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// apiServerMessage pulls the human-readable line out of a Kubernetes Status
+// object. Dumping the raw JSON buries the one sentence that explains what
+// happened under three levels of escaping.
+func apiServerMessage(body []byte) string {
+	var status struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &status); err == nil && status.Message != "" {
+		return status.Message
+	}
+	return truncate(strings.TrimSpace(string(body)), 300)
 }
 
 func truncate(s string, n int) string {

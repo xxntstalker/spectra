@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"spectra/internal/openapi"
 )
@@ -105,6 +106,28 @@ type Client struct {
 	Headers map[string]string
 	// UserAgent identifies the portal in upstream access logs.
 	UserAgent string
+	// Delay is paced between probe attempts against one service.
+	//
+	// Without it, a service that publishes nothing receives all 45 candidate
+	// requests inside a single second — which is indistinguishable from a port
+	// scan and gets flagged by any WAF or rate limiter. Spread over a few
+	// seconds it looks like what it is: one client checking a handful of
+	// conventional addresses.
+	Delay time.Duration
+}
+
+// pace waits before the next attempt against the same service, unless the
+// budget has already run out.
+func (c *Client) pace(ctx context.Context) bool {
+	if c.Delay <= 0 {
+		return ctx.Err() == nil
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(c.Delay):
+		return true
+	}
 }
 
 type Response struct {
@@ -208,8 +231,11 @@ func (c *Client) Discover(ctx context.Context, baseURL, configuredSpecURL string
 	// but /swagger is served almost everywhere — and that page has to tell its
 	// own viewer where the spec is. Reading it turns guessing into looking up
 	// the answer, and it costs two requests instead of thirty misses.
-	for _, path := range docPagePaths {
+	for i, path := range docPagePaths {
 		if ctx.Err() != nil {
+			return res, c.deadlineError(res)
+		}
+		if i > 0 && !c.pace(ctx) {
 			return res, c.deadlineError(res)
 		}
 		pageURL := baseURL + path
@@ -231,11 +257,14 @@ func (c *Client) Discover(ctx context.Context, baseURL, configuredSpecURL string
 		}
 	}
 
-	for _, path := range candidatePaths {
+	for i, path := range candidatePaths {
 		// Once the budget is gone every remaining request fails instantly, so
 		// carrying on would only inflate the "tried" count with probes that
 		// never reached the network.
 		if ctx.Err() != nil {
+			return res, c.deadlineError(res)
+		}
+		if i > 0 && !c.pace(ctx) {
 			return res, c.deadlineError(res)
 		}
 		target := baseURL + path

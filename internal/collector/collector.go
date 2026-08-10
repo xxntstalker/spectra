@@ -244,6 +244,7 @@ func (c *Collector) pollOne(ctx context.Context, svc store.Service, settings sto
 	client := &discovery.Client{
 		HTTP:      &http.Client{Timeout: settings.RequestTimeout},
 		UserAgent: c.cfg.HTTP.UserAgent,
+		Delay:     settings.ProbeDelay,
 	}
 	now := time.Now()
 	probe := store.ProbeResult{ServiceID: svc.ID, CheckedAt: now}
