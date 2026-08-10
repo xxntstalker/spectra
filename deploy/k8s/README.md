@@ -24,18 +24,26 @@ kubectl -n spectra port-forward svc/spectra 8080:80
 
 ## Что должно получиться
 
-Из 14 объектов Ingress в реестр попадают 9:
+Из 15 объектов Ingress в реестр попадают 10:
 
 | Ingress | Итог |
 |---|---|
 | 7 демо-сервисов | спека собрана |
-| `plain-website` (nginx) | «спека не найдена» — нормальное состояние |
-| `dead-backend` | «недоступен» — отличается от «спеки нет» |
+| `plain-website` (nginx) | «спека не найдена» — нормальное состояние, автоопрос выключается |
+| `dead-backend` | «недоступен» — отличается от «спеки нет», остаётся в расписании |
+| `warehouse-annotated` | попадает отдельной записью: имя, группа и адрес спеки из аннотаций |
 | `cm-acme-http-solver-*` | пропущен (челлендж cert-manager) |
 | `opted-out` | пропущен (`spectra.io/skip: "true"`) |
 | `wildcard` (`*.demo.local`) | пропущен (по нему нельзя сделать запрос) |
 | `system-dashboard` в `kube-system` | пропущен (исключённый namespace) |
 | `orders-annotated` | схлопнут с `orders`: тот же backend = один API |
+
+Проверить:
+
+```bash
+kubectl -n spectra port-forward svc/spectra 8080:80
+curl -s localhost:8080/metrics | grep spectra_services
+```
 
 ## Права
 
