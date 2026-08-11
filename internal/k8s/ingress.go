@@ -131,6 +131,30 @@ func (c *Client) Discover(ctx context.Context) ([]store.Discovered, error) {
 	return out, nil
 }
 
+// publicKey is what a consumer of the API sees: the hostname and the path
+// prefix, without the backend behind them.
+//
+// The registry is keyed by the backend Service, which is right when one API has
+// several ways in. It is wrong in the other direction: several Ingresses in
+// different namespaces can declare the same host and path, each pointing at its
+// own backend — a migration between namespaces, a copy left behind, a
+// blue/green pair. The ingress controller routes such a host to exactly one of
+// them, so there is one API there, and the portal was listing it several times.
+//
+// Which of them is the real one cannot be decided here: it depends on which
+// already carries a specification and history, and this package does not see
+// the registry. So the grouping is reported and the store picks the survivor.
+func publicKey(host, baseURL string) string {
+	if host == "" {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return host
+	}
+	return host + u.Path
+}
+
 func (c *Client) skip(ing ingress) bool {
 	if ing.Metadata.Annotations[annotationSkip] == "true" {
 		return true
@@ -216,10 +240,16 @@ func (c *Client) candidates(ing ingress) []candidate {
 					DisplayName: name,
 					BaseURL:     baseURL,
 					FallbackURL: fallbackURL,
-					Host:        rule.Host,
-					Namespace:   ing.Metadata.Namespace,
-					IngressName: ing.Metadata.Name,
-					Backend:     backend,
+					// Публичный адрес: по нему в реестре схлопываются записи,
+					// которые снаружи неразличимы.
+					PublicKey: publicKey(rule.Host, baseURL),
+					// Имя из аннотации — то, как команда назвала свой сервис;
+					// выведенное из имени Service уступит названию из спеки.
+					NameIsExplicit: explicit,
+					Host:           rule.Host,
+					Namespace:      ing.Metadata.Namespace,
+					IngressName:    ing.Metadata.Name,
+					Backend:        backend,
 				},
 				explicitName: explicit,
 			})

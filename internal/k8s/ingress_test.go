@@ -115,6 +115,67 @@ func TestDiscoverBuildsClusterAddresses(t *testing.T) {
 	}
 }
 
+// Несколько Ingress в разных namespace на один публичный хост — это один API
+// снаружи, а в реестре получалось несколько одинаковых записей.
+func TestSameHostInSeveralNamespacesCollapsesToOneEntry(t *testing.T) {
+	body := ingressJSON(
+		rule("shop", "api", "api.example.com", "/", "api-svc", 80, nil),
+		rule("shop-new", "api", "api.example.com", "/", "api-svc", 80, nil),
+		rule("legacy", "api", "api.example.com", "/", "old-api", 80, nil),
+	)
+	c := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+	// Дискавери не выбирает победителя — оно только сообщает, что все три
+	// записи стоят на одном публичном адресе. Кто из них настоящий, видно по
+	// истории и по тому, кто отвечает, а этих данных здесь нет.
+	found := discover(t, c)
+	if len(found) != 3 {
+		t.Fatalf("записей %d, ожидалось три: %v", len(found), keysOf(found))
+	}
+	for key, item := range found {
+		if item.PublicKey != "api.example.com" {
+			t.Errorf("%s: публичный адрес = %q", key, item.PublicKey)
+		}
+	}
+}
+
+// Один хост может обслуживать два разных API под разными префиксами — это не
+// дубль, и схлопывать их нельзя.
+func TestSameHostDifferentPathsStayApart(t *testing.T) {
+	body := ingressJSON(
+		rule("shop", "orders", "api.example.com", "/orders", "orders-svc", 80, nil),
+		rule("shop", "billing", "api.example.com", "/billing", "billing-svc", 80, nil),
+	)
+	c := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+	seen := map[string]bool{}
+	for _, item := range discover(t, c) {
+		seen[item.PublicKey] = true
+	}
+	if !seen["api.example.com/orders"] || !seen["api.example.com/billing"] {
+		t.Errorf("префиксы пути потерялись, публичные адреса: %v", seen)
+	}
+}
+
+// Имя, которое команда объявила аннотацией, выигрывает слияние: оно осмысленнее
+// имени Service и не зависит от того, какой Ingress прочли первым.
+func TestWrittenNameWinsTheMerge(t *testing.T) {
+	body := ingressJSON(
+		rule("a", "api", "api.example.com", "/", "aaa-svc", 80, nil),
+		rule("b", "api", "api.example.com", "/", "zzz-svc", 80,
+			map[string]string{annotationName: "Заказы"}),
+	)
+	c := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+	item, ok := discover(t, c)["zzz-svc.b:80"]
+	if !ok {
+		t.Fatal("запись с аннотацией не найдена")
+	}
+	if item.DisplayName != "Заказы" || !item.NameIsExplicit {
+		t.Errorf("имя из аннотации потерялось: %q, явное=%v", item.DisplayName, item.NameIsExplicit)
+	}
+}
+
 // Whichever address is primary, the other one is the fallback: the pair is the
 // same, only the order changes.
 func TestFallbackIsTheOtherAddress(t *testing.T) {

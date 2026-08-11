@@ -514,3 +514,147 @@ func TestCountsSeeMissingOwners(t *testing.T) {
 		t.Errorf("без владельца: %d, ожидался 1 (спрятанные не считаются)", c.NoOwner)
 	}
 }
+
+// ------------------------------------------------- слияние дублей и имена --
+
+// Дубли одного API: наружу один адрес, внутри несколько backend. Поглощённая
+// запись уходит из списков и из опроса, но её история остаётся на месте.
+func TestSupersededEntryLeavesTheListsAndThePoll(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	ids := seed(t, s, "winner", "loser")
+
+	// Обе записи стоят на одном публичном адресе. У winner есть ревизия —
+	// значит именно он отдаёт API, и он обязан пережить слияние, каким бы ни
+	// был лексикографический порядок ключей.
+	if _, err := s.InsertVersion(ctx, &Version{
+		ServiceID: ids["winner"], Hash: "h1", CapturedAt: time.Now(),
+		Spec: []byte(`{"openapi":"3.0.0"}`), EndpointCount: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	both := []Discovered{
+		{Key: "winner.ns:80", DisplayName: "winner", BaseURL: "http://winner.ns:80",
+			Host: "api.example.com", Namespace: "ns", Backend: "winner.ns:80",
+			PublicKey: "api.example.com"},
+		{Key: "loser.ns:80", DisplayName: "loser", BaseURL: "http://loser.ns:80",
+			Host: "api.example.com", Namespace: "ns", Backend: "loser.ns:80",
+			PublicKey: "api.example.com"},
+	}
+	if _, err := s.SyncDiscovered(ctx, "kubernetes", both); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := s.ListServices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range list {
+		if svc.ID == ids["loser"] {
+			t.Error("поглощённая запись осталась в списке — дубль никуда не делся")
+		}
+	}
+
+	candidates, err := s.PollCandidates(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range candidates {
+		if svc.ID == ids["loser"] {
+			t.Error("поглощённая запись опрашивается — сервис получает двойную нагрузку")
+		}
+	}
+
+	// По прямой ссылке страница обязана открываться: там история и объяснение.
+	svc, err := s.GetService(ctx, ids["loser"])
+	if err != nil || svc == nil {
+		t.Fatalf("поглощённая запись недоступна по ссылке: %v", err)
+	}
+	if svc.SupersededBy == nil || *svc.SupersededBy != ids["winner"] {
+		t.Errorf("ссылка на победителя = %v, ожидался %d", svc.SupersededBy, ids["winner"])
+	}
+	if counts, err := s.Counts(ctx); err == nil && counts.Total != 1 {
+		t.Errorf("в счётчиках %d записей, ожидалась одна", counts.Total)
+	}
+}
+
+// Если хосты снова разъедутся, запись должна вернуться сама — иначе разделение
+// сервисов потребовало бы ручного вмешательства в базу.
+func TestSupersededEntryReturnsWhenItIsDiscoveredAgain(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	ids := seed(t, s, "winner", "loser")
+
+	one := Discovered{Key: "winner.ns:80", DisplayName: "winner", BaseURL: "http://winner.ns:80",
+		Host: "api.example.com", Namespace: "ns", Backend: "winner.ns:80",
+		PublicKey: "api.example.com"}
+	two := Discovered{Key: "loser.ns:80", DisplayName: "loser", BaseURL: "http://loser.ns:80",
+		Host: "api.example.com", Namespace: "ns", Backend: "loser.ns:80",
+		PublicKey: "api.example.com"}
+	if _, err := s.SyncDiscovered(ctx, "kubernetes", []Discovered{one, two}); err != nil {
+		t.Fatal(err)
+	}
+	// Хосты разъехались: дубля больше нет.
+	two.Host, two.PublicKey = "loser.example.com", "loser.example.com"
+	if _, err := s.SyncDiscovered(ctx, "kubernetes", []Discovered{one, two}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := s.GetService(ctx, ids["loser"])
+	if err != nil || svc == nil {
+		t.Fatal(err)
+	}
+	if svc.SupersededBy != nil {
+		t.Error("запись не вернулась после того, как хост снова стал своим")
+	}
+	if !svc.Present {
+		t.Error("вернувшаяся запись помечена отсутствующей")
+	}
+}
+
+// Название: имя backend-Service уступает заголовку из спеки, а вписанное
+// человеком не уступает ничему.
+func TestLabelPrefersTheSpecificationTitleOverTheServiceName(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	ids := seed(t, s, "api")
+
+	if svc, _ := s.GetService(ctx, ids["api"]); svc.Label != "api" {
+		t.Errorf("без спеки название = %q, ожидалось имя Service", svc.Label)
+	}
+
+	if _, err := s.InsertVersion(ctx, &Version{
+		ServiceID: ids["api"], Hash: "h1", CapturedAt: time.Now(),
+		Spec: []byte(`{"openapi":"3.0.0"}`), Title: "Заказы и доставка", EndpointCount: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := s.GetService(ctx, ids["api"])
+	if svc.Label != "Заказы и доставка" {
+		t.Errorf("название = %q, ожидался заголовок из спеки", svc.Label)
+	}
+	if svc.DisplayName != "api" {
+		t.Errorf("исходное имя затёрлось: %q", svc.DisplayName)
+	}
+
+	name := "Ядро заказов"
+	if err := s.UpdateService(ctx, ids["api"], ServiceUpdate{DisplayName: &name}); err != nil {
+		t.Fatal(err)
+	}
+	if svc, _ := s.GetService(ctx, ids["api"]); svc.Label != name {
+		t.Errorf("вписанное имя уступило заголовку: %q", svc.Label)
+	}
+
+	// Очистка поля возвращает заголовок из спеки, а не пустое имя.
+	empty := ""
+	if err := s.UpdateService(ctx, ids["api"], ServiceUpdate{DisplayName: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ = s.GetService(ctx, ids["api"])
+	if svc.Label != "Заказы и доставка" {
+		t.Errorf("после очистки название = %q", svc.Label)
+	}
+	if svc.DisplayName != "api" {
+		t.Errorf("после очистки имя = %q, ожидалось имя backend-Service", svc.DisplayName)
+	}
+}

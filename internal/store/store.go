@@ -343,23 +343,36 @@ type Service struct {
 	Key         string `json:"key"`
 	Source      string `json:"source"`
 	DisplayName string `json:"displayName"`
-	BaseURL     string `json:"baseUrl"`
+	// NameIsExplicit means DisplayName was chosen by a person or an annotation.
+	// When false it is the backend Service's name, which repeats across a
+	// cluster, and the specification's title is the better label.
+	NameIsExplicit bool `json:"nameIsExplicit"`
+	// Label is what to put on screen: the name somebody chose, otherwise the
+	// title the specification declares, otherwise the backend Service's name.
+	// Resolved here so the lists, the change feed and the service page cannot
+	// drift apart on what a service is called.
+	Label   string `json:"label"`
+	BaseURL string `json:"baseUrl"`
 	// FallbackURL is the second way into the same service, tried when the
 	// primary address does not answer. UsingFallback says which one the last
 	// poll actually used.
-	FallbackURL   string   `json:"fallbackUrl,omitempty"`
-	UsingFallback bool     `json:"usingFallback"`
-	ReviewState   string   `json:"reviewState"`
-	ProbeStatus   string   `json:"probeStatus"`
-	Present       bool     `json:"present"`
-	Host          string   `json:"host,omitempty"`
-	Namespace     string   `json:"namespace,omitempty"`
-	IngressName   string   `json:"ingressName,omitempty"`
-	Backend       string   `json:"backend,omitempty"`
-	GroupID       *int64   `json:"groupId,omitempty"`
-	GroupName     string   `json:"groupName,omitempty"`
-	Tags          []string `json:"tags"`
-	Notes         string   `json:"notes,omitempty"`
+	FallbackURL   string `json:"fallbackUrl,omitempty"`
+	UsingFallback bool   `json:"usingFallback"`
+	// SupersededBy points at the entry that absorbed this one as a duplicate of
+	// the same public address. Set means the entry is retired: out of the lists
+	// and out of the poll, reachable only by a direct link.
+	SupersededBy *int64   `json:"supersededBy,omitempty"`
+	ReviewState  string   `json:"reviewState"`
+	ProbeStatus  string   `json:"probeStatus"`
+	Present      bool     `json:"present"`
+	Host         string   `json:"host,omitempty"`
+	Namespace    string   `json:"namespace,omitempty"`
+	IngressName  string   `json:"ingressName,omitempty"`
+	Backend      string   `json:"backend,omitempty"`
+	GroupID      *int64   `json:"groupId,omitempty"`
+	GroupName    string   `json:"groupName,omitempty"`
+	Tags         []string `json:"tags"`
+	Notes        string   `json:"notes,omitempty"`
 
 	// Owner is who to ask about this service. Manual values win over anything
 	// the sweep discovered, per field.
@@ -397,8 +410,11 @@ type Service struct {
 }
 
 const serviceColumns = `
-	s.id, s.key, s.source, s.display_name, s.base_url,
-	COALESCE(s.fallback_url,''), s.using_fallback,
+	s.id, s.key, s.source, s.display_name, s.name_is_explicit,
+	CASE WHEN s.name_is_explicit THEN s.display_name
+	     ELSE COALESCE(NULLIF(v.title,''), s.display_name) END,
+	s.base_url,
+	COALESCE(s.fallback_url,''), s.using_fallback, s.superseded_by,
 	s.review_state, s.probe_status, s.present,
 	COALESCE(s.host,''), COALESCE(s.namespace,''), COALESCE(s.ingress_name,''), COALESCE(s.backend,''),
 	s.group_id, COALESCE(g.name,''), s.tags, s.notes,
@@ -434,8 +450,8 @@ const serviceFrom = `
 func scanService(row pgx.Row) (Service, error) {
 	var s Service
 	var groupID *int64
-	err := row.Scan(&s.ID, &s.Key, &s.Source, &s.DisplayName, &s.BaseURL,
-		&s.FallbackURL, &s.UsingFallback,
+	err := row.Scan(&s.ID, &s.Key, &s.Source, &s.DisplayName, &s.NameIsExplicit, &s.Label, &s.BaseURL,
+		&s.FallbackURL, &s.UsingFallback, &s.SupersededBy,
 		&s.ReviewState, &s.ProbeStatus, &s.Present,
 		&s.Host, &s.Namespace, &s.IngressName, &s.Backend,
 		&groupID, &s.GroupName, &s.Tags, &s.Notes,
@@ -461,7 +477,11 @@ func scanService(row pgx.Row) (Service, error) {
 }
 
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
+	// Записи, поглощённые как дубли, не показываются: снаружи это тот же
+	// адрес и тот же API, и в списке они были бы вторым именем одного и того
+	// же. По прямой ссылке страница по-прежнему открывается — с пояснением.
 	rows, err := s.pool.Query(ctx, `SELECT `+serviceColumns+serviceFrom+`
+		WHERE s.superseded_by IS NULL
 		ORDER BY g.position NULLS LAST, g.name NULLS LAST, s.display_name`)
 	if err != nil {
 		return nil, err
@@ -540,7 +560,18 @@ func (s *Store) UpdateService(ctx context.Context, id int64, u ServiceUpdate) er
 		sets = append(sets, fmt.Sprintf("%s = $%d", expr, len(args)))
 	}
 	if u.DisplayName != nil {
-		add("display_name", *u.DisplayName)
+		// Пустое значение — это «убрать своё название», а не «оставить как
+		// было»: запись возвращается к имени backend-Service, и заголовок из
+		// спецификации снова становится главнее. Подстановка делается здесь,
+		// а не в браузере, чтобы правило было одно для всех, кто зовёт API.
+		if strings.TrimSpace(*u.DisplayName) == "" {
+			sets = append(sets,
+				"display_name = COALESCE(NULLIF(split_part(backend, '.', 1), ''), display_name)",
+				"name_is_explicit = FALSE")
+		} else {
+			add("display_name", strings.TrimSpace(*u.DisplayName))
+			add("name_is_explicit", true)
+		}
 	}
 	if u.GroupID != nil {
 		add("group_id", *u.GroupID)
