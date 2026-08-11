@@ -45,16 +45,31 @@ type Collector struct {
 	// letting two overlap would double the requests every watched service
 	// receives, which is precisely what this portal must not do.
 	sweeping sync.Mutex
+
+	// transport is built once and shared by every poll. Per-poll transports
+	// would each keep their own connection pool, so nothing would ever be
+	// reused and every request would open a fresh connection.
+	transport *http.Transport
 }
 
 func New(cfg *config.Config, st *store.Store, kube *k8s.Client, log *slog.Logger) *Collector {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = cfg.HTTP.TLSClientConfig()
+	if cfg.HTTP.TLSSkipVerify {
+		// Строчка на видном месте: это состояние должно быть заметно тому, кто
+		// смотрит в лог, а не выясняться из переменных окружения.
+		log.Warn("проверка сертификатов опрашиваемых сервисов отключена " +
+			"(SPECTRA_TLS_SKIP_VERIFY); соединение шифруется, но подлинность " +
+			"сервиса не подтверждается")
+	}
 	return &Collector{
-		cfg:     cfg,
-		store:   st,
-		k8s:     kube,
-		log:     log,
-		trigger: make(chan int64, 64),
-		syncNow: make(chan struct{}, 1),
+		cfg:       cfg,
+		store:     st,
+		k8s:       kube,
+		log:       log,
+		trigger:   make(chan int64, 64),
+		syncNow:   make(chan struct{}, 1),
+		transport: transport,
 	}
 }
 
@@ -317,7 +332,7 @@ func (c *Collector) pollOne(ctx context.Context, svc store.Service, settings sto
 	defer cancel()
 
 	client := &discovery.Client{
-		HTTP:      &http.Client{Timeout: settings.RequestTimeout},
+		HTTP:      &http.Client{Timeout: settings.RequestTimeout, Transport: c.transport},
 		UserAgent: c.cfg.HTTP.UserAgent,
 		Delay:     settings.ProbeDelay,
 	}

@@ -12,6 +12,7 @@
 package config
 
 import (
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strconv"
@@ -88,6 +89,16 @@ type HTTP struct {
 	// no authentication of its own.
 	ProxyEnabled bool
 	UserAgent    string
+
+	// TLSSkipVerify отключает проверку сертификатов у опрашиваемых сервисов.
+	// Нужен там, где внутренние сервисы стоят за самоподписанными
+	// сертификатами. К Kubernetes не относится — там свой CA, и его проверка
+	// не ослабляется никогда.
+	TLSSkipVerify bool
+	// CABundle — путь к дополнительным корневым сертификатам. Способ лучше
+	// предыдущего: проверка остаётся, просто портал знает, кому верить.
+	CABundle string
+	caPool   *x509.CertPool
 }
 
 const (
@@ -120,14 +131,26 @@ func Load() (*Config, error) {
 			SyncInterval:   envDuration("SPECTRA_K8S_SYNC_INTERVAL", time.Hour),
 		},
 		HTTP: HTTP{
-			ProxyEnabled: envBool("SPECTRA_PROXY_ENABLED", false),
-			UserAgent:    env("SPECTRA_USER_AGENT", "spectra/2.0"),
+			ProxyEnabled:  envBool("SPECTRA_PROXY_ENABLED", false),
+			UserAgent:     env("SPECTRA_USER_AGENT", "spectra/2.0"),
+			TLSSkipVerify: envBool("SPECTRA_TLS_SKIP_VERIFY", false),
+			CABundle:      env("SPECTRA_CA_BUNDLE", ""),
 		},
 		Admin: Admin{
 			User:     env("SPECTRA_ADMIN_USER", ""),
 			Password: env("SPECTRA_ADMIN_PASSWORD", ""),
 		},
 		StaticServices: envList("SPECTRA_STATIC_SERVICES", nil),
+	}
+
+	// Сертификаты читаются на старте: неверный путь должен ронять запуск
+	// сразу, а не всплывать на первом опросе через час.
+	if c.HTTP.CABundle != "" {
+		pool, err := loadCABundle(c.HTTP.CABundle)
+		if err != nil {
+			return nil, err
+		}
+		c.HTTP.caPool = pool
 	}
 
 	if c.Kubernetes.Enabled && c.Kubernetes.Token == "" {

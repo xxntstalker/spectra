@@ -2,6 +2,10 @@ package collector
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,10 +29,7 @@ func testStore(t *testing.T) *store.Store {
 	if dsn == "" {
 		t.Skip("SPECTRA_TEST_DATABASE_URL не задан — пропускаю тесты, которым нужен Postgres")
 	}
-	schema := strings.ReplaceAll("c_"+t.Name(), "/", "_")
-	if len(schema) > 40 {
-		schema = schema[:40]
-	}
+	schema := schemaName("c_", t.Name())
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
@@ -763,4 +764,108 @@ func TestManualAddressIsPolledExactlyAsTyped(t *testing.T) {
 	if n := backendHits.Load(); n != 0 {
 		t.Errorf("backend опрошен %d раз, хотя адрес спеки задан явно", n)
 	}
+}
+
+// Внутренние сервисы часто стоят за самоподписанными сертификатами: системный
+// набор корней о них не знает, и опрос упирается в ошибку проверки при живом
+// сервисе. httptest.NewTLSServer выдаёт ровно такой сертификат.
+func TestSelfSignedCertificate(t *testing.T) {
+	body := spec
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/openapi.json" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, body)
+	})
+
+	t.Run("по умолчанию проверка работает", func(t *testing.T) {
+		h := newHarness(t, nil)
+		srv := httptest.NewTLSServer(handler)
+		t.Cleanup(srv.Close)
+		id := h.register(t, "tls", srv.URL)
+
+		h.poll(t)
+
+		svc := h.service(t, id)
+		if svc.ProbeStatus == store.ProbeOK {
+			t.Fatal("самоподписанный сертификат принят без указания — проверка не работает")
+		}
+		// Сообщение обязано назвать причину: «сервис не ответил» отправляет
+		// разбираться с сетью, хотя сервис ответил, а отказался портал.
+		if !strings.Contains(svc.LastError, "сертификат") {
+			t.Errorf("ошибка не называет причину: %q", svc.LastError)
+		}
+		if !strings.Contains(svc.LastError, "SPECTRA_TLS_SKIP_VERIFY") {
+			t.Errorf("ошибка не подсказывает, что делать: %q", svc.LastError)
+		}
+	})
+
+	t.Run("с выключенной проверкой опрос проходит", func(t *testing.T) {
+		h := newHarness(t, nil)
+		h.collector.cfg.HTTP.TLSSkipVerify = true
+		h.collector.transport.TLSClientConfig = h.collector.cfg.HTTP.TLSClientConfig()
+
+		srv := httptest.NewTLSServer(handler)
+		t.Cleanup(srv.Close)
+		id := h.register(t, "tls", srv.URL)
+
+		h.poll(t)
+
+		svc := h.service(t, id)
+		if svc.ProbeStatus != store.ProbeOK {
+			t.Fatalf("статус = %q (%s)", svc.ProbeStatus, svc.LastError)
+		}
+		if svc.VersionCount != 1 {
+			t.Errorf("ревизий %d, ожидалась одна", svc.VersionCount)
+		}
+	})
+
+	t.Run("с указанным корневым сертификатом проверка остаётся", func(t *testing.T) {
+		h := newHarness(t, nil)
+		srv := httptest.NewTLSServer(handler)
+		t.Cleanup(srv.Close)
+
+		// Сертификат самого сервера как корневой: проверка идёт и проходит.
+		pool := x509.NewCertPool()
+		pool.AddCert(srv.Certificate())
+		h.collector.transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12, RootCAs: pool,
+		}
+
+		id := h.register(t, "tls", srv.URL)
+		h.poll(t)
+
+		if svc := h.service(t, id); svc.ProbeStatus != store.ProbeOK {
+			t.Fatalf("статус = %q (%s)", svc.ProbeStatus, svc.LastError)
+		}
+	})
+}
+
+// schemaName строит имя схемы Postgres из имени теста.
+//
+// Имя теста — не идентификатор: в нём слэши от подтестов и, здесь, кириллица.
+// Обрезание по байтам разрывало символ пополам, и Postgres отвергал строку
+// («invalid byte sequence for encoding UTF8»). Поэтому имя сводится к ASCII, а
+// уникальность даёт хэш от исходного.
+func schemaName(prefix, testName string) string {
+	var b strings.Builder
+	for _, r := range testName {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		default:
+			b.WriteByte('_')
+		}
+	}
+	ascii := b.String()
+	if len(ascii) > 24 {
+		ascii = ascii[:24]
+	}
+	sum := fnv.New32a()
+	sum.Write([]byte(testName))
+	return fmt.Sprintf("%s%s_%08x", prefix, ascii, sum.Sum32())
 }

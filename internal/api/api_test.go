@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -40,10 +41,7 @@ func newEnv(t *testing.T, tune func(*config.Config)) *env {
 	if dsn == "" {
 		t.Skip("SPECTRA_TEST_DATABASE_URL не задан — пропускаю тесты, которым нужен Postgres")
 	}
-	schema := strings.ReplaceAll("a_"+t.Name(), "/", "_")
-	if len(schema) > 40 {
-		schema = schema[:40]
-	}
+	schema := schemaName("a_", t.Name())
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
@@ -762,4 +760,31 @@ func TestPublicAddressNeverReturnsTheInClusterOne(t *testing.T) {
 	if got := publicAddress(svc); strings.Contains(got, "api.shop") {
 		t.Errorf("в спеку ушёл внутренний адрес: %q", got)
 	}
+}
+
+// schemaName строит имя схемы Postgres из имени теста.
+//
+// Имя теста — не идентификатор: в нём слэши от подтестов и, здесь, кириллица.
+// Обрезание по байтам разрывало символ пополам, и Postgres отвергал строку
+// («invalid byte sequence for encoding UTF8»). Поэтому имя сводится к ASCII, а
+// уникальность даёт хэш от исходного.
+func schemaName(prefix, testName string) string {
+	var b strings.Builder
+	for _, r := range testName {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		default:
+			b.WriteByte('_')
+		}
+	}
+	ascii := b.String()
+	if len(ascii) > 24 {
+		ascii = ascii[:24]
+	}
+	sum := fnv.New32a()
+	sum.Write([]byte(testName))
+	return fmt.Sprintf("%s%s_%08x", prefix, ascii, sum.Sum32())
 }

@@ -8,6 +8,9 @@ package discovery
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -209,6 +212,9 @@ type Result struct {
 // or a path relative to baseURL; when empty, probing and scraping take over.
 func (c *Client) Discover(ctx context.Context, baseURL, configuredSpecURL string) (*Result, error) {
 	res := &Result{}
+	// Причина последней неудачи запоминается: без неё сорок пять промахов
+	// сообщают только своё количество, а не то, что их объединяет.
+	var lastErr error
 
 	if configuredSpecURL != "" {
 		target, err := resolveAgainst(baseURL, configuredSpecURL)
@@ -272,6 +278,7 @@ func (c *Client) Discover(ctx context.Context, baseURL, configuredSpecURL string
 		doc, raw, resp, err := c.fetchSpec(ctx, target)
 		res.Reached = res.Reached || resp != nil
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		res.SpecURL, res.Source, res.Doc, res.Raw, res.Resp = target, SourceProbe, doc, raw, resp
@@ -279,7 +286,8 @@ func (c *Client) Discover(ctx context.Context, baseURL, configuredSpecURL string
 	}
 
 	if !res.Reached {
-		return res, fmt.Errorf("service did not respond on any of %d probed URLs", len(res.Tried))
+		return res, fmt.Errorf("service did not respond on any of %d probed URLs%s",
+			len(res.Tried), because(lastErr))
 	}
 	return res, fmt.Errorf("service responded but published no OpenAPI document (%d locations tried)", len(res.Tried))
 }
@@ -412,4 +420,28 @@ func resolveAgainst(base, ref string) (string, error) {
 		return "", err
 	}
 	return r.String(), nil
+}
+
+// because turns the transport error into a clause worth reading.
+//
+// A certificate that fails verification is the case this exists for. Without
+// it the report says "service did not respond", which sends the reader to look
+// at networking and firewalls — while the service in fact answered and the
+// portal was the one that hung up. Naming it costs one line and saves an
+// afternoon.
+func because(err error) string {
+	if err == nil {
+		return ""
+	}
+	var verify *tls.CertificateVerificationError
+	if errors.As(err, &verify) {
+		return ": сертификат сервиса не прошёл проверку (" + verify.Err.Error() +
+			"). Если это внутренний центр сертификации — укажите его в SPECTRA_CA_BUNDLE; " +
+			"если проверять нечем — SPECTRA_TLS_SKIP_VERIFY=true"
+	}
+	var hostErr x509.HostnameError
+	if errors.As(err, &hostErr) {
+		return ": сертификат сервиса выписан на другое имя (" + hostErr.Error() + ")"
+	}
+	return ""
 }
