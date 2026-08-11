@@ -53,6 +53,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tags", s.listTags)
 
 	// Behind a login: anything that changes state or acts on a service.
+	// Вход обменивает логин с паролем на сессионную куку: браузер делит её
+	// между вкладками сам, и странице больше не нужно хранить пароль.
+	mux.HandleFunc("POST /api/login", s.requireAdmin(s.login))
+	mux.HandleFunc("POST /api/logout", s.logout)
+
 	mux.HandleFunc("PATCH /api/services/{id}", s.requireAdmin(s.patchService))
 	mux.HandleFunc("POST /api/services/{id}/probe", s.requireAdmin(s.probeService))
 	mux.HandleFunc("POST /api/groups", s.requireAdmin(s.createGroup))

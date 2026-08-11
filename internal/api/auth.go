@@ -45,15 +45,22 @@ func (s *Server) checkAdmin(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	user, password, ok := r.BasicAuth()
-	if !ok || !equal(user, s.cfg.Admin.User) || !equal(password, s.cfg.Admin.Password) {
-		// The realm makes the browser show its own login dialog, which is all
-		// the login form this needs.
-		w.Header().Set("WWW-Authenticate", `Basic realm="API Portal", charset="UTF-8"`)
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "нужен вход администратора"})
-		return false
+	// A session cookie is the normal case; Basic stays accepted so that curl
+	// and the login exchange itself keep working without a browser.
+	if s.hasSession(r) || s.hasBasic(r) {
+		return true
 	}
-	return true
+	// No WWW-Authenticate header: it would make the browser pop its own login
+	// dialog over the page, and the portal has its own. The dialog also cannot
+	// be dismissed cleanly for a visitor who has no account and only wanted to
+	// read a specification.
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "нужен вход администратора"})
+	return false
+}
+
+func (s *Server) hasBasic(r *http.Request) bool {
+	user, password, ok := r.BasicAuth()
+	return ok && equal(user, s.cfg.Admin.User) && equal(password, s.cfg.Admin.Password)
 }
 
 // isPortalCredential reports whether the Authorization header on this request
@@ -84,6 +91,5 @@ func (s *Server) isAdmin(r *http.Request) bool {
 	if s.cfg.Admin.User == "" || s.cfg.Admin.Password == "" {
 		return false
 	}
-	user, password, ok := r.BasicAuth()
-	return ok && equal(user, s.cfg.Admin.User) && equal(password, s.cfg.Admin.Password)
+	return s.hasSession(r) || s.hasBasic(r)
 }

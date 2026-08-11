@@ -28,6 +28,7 @@ const swagger2 = `{"swagger":"2.0","info":{"title":"L","version":"1"},
 
 type env struct {
 	handler http.Handler
+	server  *Server
 	store   *store.Store
 	ids     map[string]int64
 }
@@ -81,7 +82,8 @@ func newEnv(t *testing.T, tune func(*config.Config)) *env {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	col := collector.New(cfg, st, nil, log)
 
-	e := &env{handler: New(cfg, st, col, log).Handler(), store: st, ids: map[string]int64{}}
+	srv := New(cfg, st, col, log)
+	e := &env{handler: srv.Handler(), server: srv, store: st, ids: map[string]int64{}}
 	return e
 }
 
@@ -228,6 +230,105 @@ func TestWritesAndProxyNeedTheLogin(t *testing.T) {
 	for _, path := range []string{"/api/services", "/api/changes", "/api/groups", "/api/overview"} {
 		if rec := e.do(t, "GET", path, "", false); rec.Code != http.StatusOK {
 			t.Errorf("GET %s без логина вернул %d — чтение должно быть открыто", path, rec.Code)
+		}
+	}
+}
+
+// The login used to live in the page's sessionStorage, which is per-tab: a
+// second tab started logged out. It is exchanged for a cookie now, so the
+// browser shares it, and the password never has to be kept anywhere.
+func TestLoginIssuesASessionUsableWithoutThePassword(t *testing.T) {
+	e := newEnv(t, nil)
+	e.seed(t, standardService())
+
+	rec := e.do(t, "POST", "/api/login", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("вход вернул %d: %s", rec.Code, rec.Body.String())
+	}
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "spectra_session" {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatal("вход не поставил куку — вкладки по-прежнему не поделят сессию")
+	}
+	if !session.HttpOnly {
+		t.Error("кука читается скриптом: смысл ухода от sessionStorage теряется")
+	}
+	if session.SameSite != http.SameSiteStrictMode {
+		t.Error("SameSite не Strict — это единственная защита от постороннего POST")
+	}
+	// The value must not carry the credentials it was exchanged for.
+	if strings.Contains(session.Value, "secret") || strings.Contains(session.Value, "admin") {
+		t.Errorf("в куке видны учётные данные: %q", session.Value)
+	}
+
+	// A write with the cookie and no password — this is the new tab's case.
+	req := httptest.NewRequest("POST", "/api/services/"+itoa(e.ids["orders"])+"/probe", nil)
+	req.AddCookie(session)
+	rec = httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("запись по сессии вернула %d, ожидался 202", rec.Code)
+	}
+
+	// And the overview must report the session, or the UI shows a login button
+	// to someone who is already logged in.
+	req = httptest.NewRequest("GET", "/api/overview", nil)
+	req.AddCookie(session)
+	rec = httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	if admin, _ := decode[map[string]any](t, rec)["admin"].(bool); !admin {
+		t.Error("overview не признал сессию администратором")
+	}
+}
+
+func TestForgedAndExpiredSessionsAreRejected(t *testing.T) {
+	e := newEnv(t, nil)
+	e.seed(t, standardService())
+	path := "/api/services/" + itoa(e.ids["orders"]) + "/probe"
+
+	for name, value := range map[string]string{
+		"выдуманная":         "9999999999.bm9wZQ",
+		"без подписи":        "9999999999",
+		"просроченная":       e.server.issueSession(time.Now().Add(-time.Minute)),
+		"чужая подпись":      "9999999999." + strings.Repeat("A", 43),
+		"пустая":             "",
+		"подпись от прошлой": strings.Replace(e.server.issueSession(time.Now().Add(time.Hour)), ".", ".x", 1),
+	} {
+		req := httptest.NewRequest("POST", path, nil)
+		req.AddCookie(&http.Cookie{Name: "spectra_session", Value: value})
+		rec := httptest.NewRecorder()
+		e.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s кука вернула %d, ожидался 401", name, rec.Code)
+		}
+	}
+
+	// A valid one still works, so the checks above are not rejecting everything.
+	req := httptest.NewRequest("POST", path, nil)
+	req.AddCookie(&http.Cookie{Name: "spectra_session",
+		Value: e.server.issueSession(time.Now().Add(time.Hour))})
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("действующая сессия вернула %d", rec.Code)
+	}
+}
+
+// Logging out has to end the session for every tab, not just the one that
+// clicked.
+func TestLogoutClearsTheCookie(t *testing.T) {
+	e := newEnv(t, nil)
+	rec := e.do(t, "POST", "/api/logout", "", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("выход вернул %d", rec.Code)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "spectra_session" && c.MaxAge >= 0 {
+			t.Errorf("кука не погашена: MaxAge = %d", c.MaxAge)
 		}
 	}
 }
