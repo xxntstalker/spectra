@@ -342,6 +342,10 @@ table.versions td.hash { font-family: var(--mono); font-size: 11.5px; color: var
 }
 .notice-box code { color: var(--text); font-family: var(--mono); }
 
+.badge.dup { background: var(--new-bg); color: var(--new-fg); }
+/* В колонке места на слово нет — только знак, что запись не одна на адресе. */
+.dup-dot { flex: none; color: var(--new-fg); font-size: 11px; cursor: help; }
+
 .toast {
   position: fixed; right: 18px; bottom: 18px; z-index: 50;
   max-width: 420px; padding: 10px 14px;

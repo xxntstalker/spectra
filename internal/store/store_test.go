@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -517,98 +518,98 @@ func TestCountsSeeMissingOwners(t *testing.T) {
 
 // ------------------------------------------------- слияние дублей и имена --
 
-// Дубли одного API: наружу один адрес, внутри несколько backend. Поглощённая
-// запись уходит из списков и из опроса, но её история остаётся на месте.
-func TestSupersededEntryLeavesTheListsAndThePoll(t *testing.T) {
+// Записи с общим публичным адресом остаются на месте — обе.
+//
+// Раньше портал выбирал «настоящую» и прятал остальные. Признак выбора включал
+// число ревизий, а оно растёт, поэтому победитель переворачивался сам собой:
+// сегодня по адресу видна одна запись, завтра другая. Человек, вписавший адрес
+// спеки, назавтра смотрел уже на соседнюю запись и своего значения не находил.
+func TestEntriesSharingAPublicAddressAreKept(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	ids := seed(t, s, "winner", "loser")
+	ids := seed(t, s, "aaa", "bbb")
 
-	// Обе записи стоят на одном публичном адресе. У winner есть ревизия —
-	// значит именно он отдаёт API, и он обязан пережить слияние, каким бы ни
-	// был лексикографический порядок ключей.
-	if _, err := s.InsertVersion(ctx, &Version{
-		ServiceID: ids["winner"], Hash: "h1", CapturedAt: time.Now(),
-		Spec: []byte(`{"openapi":"3.0.0"}`), EndpointCount: 2,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	both := []Discovered{
-		{Key: "winner.ns:80", DisplayName: "winner", BaseURL: "http://winner.ns:80",
-			Host: "api.example.com", Namespace: "ns", Backend: "winner.ns:80",
+		{Key: "aaa.ns:80", DisplayName: "aaa", BaseURL: "http://aaa.ns:80",
+			Host: "api.example.com", Namespace: "ns", Backend: "aaa.ns:80",
 			PublicKey: "api.example.com"},
-		{Key: "loser.ns:80", DisplayName: "loser", BaseURL: "http://loser.ns:80",
-			Host: "api.example.com", Namespace: "ns", Backend: "loser.ns:80",
+		{Key: "bbb.ns:80", DisplayName: "bbb", BaseURL: "http://bbb.ns:80",
+			Host: "api.example.com", Namespace: "ns", Backend: "bbb.ns:80",
 			PublicKey: "api.example.com"},
-	}
-	if _, err := s.SyncDiscovered(ctx, "kubernetes", both); err != nil {
-		t.Fatal(err)
 	}
 
-	list, err := s.ListServices(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, svc := range list {
-		if svc.ID == ids["loser"] {
-			t.Error("поглощённая запись осталась в списке — дубль никуда не делся")
+	// Число ревизий у них меняется — раньше именно это переворачивало выбор.
+	for round, extra := range []int64{0, ids["bbb"], ids["aaa"]} {
+		if extra != 0 {
+			if _, err := s.InsertVersion(ctx, &Version{ServiceID: extra,
+				Hash: fmt.Sprintf("h%d", round), CapturedAt: time.Now(),
+				Spec: []byte(`{"openapi":"3.0.0"}`)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.SyncDiscovered(ctx, "kubernetes", both); err != nil {
+			t.Fatal(err)
+		}
+		list, err := s.ListServices(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 2 {
+			names := []string{}
+			for _, v := range list {
+				names = append(names, v.DisplayName)
+			}
+			t.Fatalf("проход %d: в списке %v, обе записи должны остаться", round, names)
+		}
+		for _, v := range list {
+			if v.PublicKey != "api.example.com" {
+				t.Errorf("проход %d: %s без публичного адреса — пометка о дубле не появится",
+					round, v.DisplayName)
+			}
 		}
 	}
 
+	// И опрашиваются обе: скрытая запись переставала опрашиваться и «протухала».
 	candidates, err := s.PollCandidates(ctx, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, svc := range candidates {
-		if svc.ID == ids["loser"] {
-			t.Error("поглощённая запись опрашивается — сервис получает двойную нагрузку")
-		}
-	}
-
-	// По прямой ссылке страница обязана открываться: там история и объяснение.
-	svc, err := s.GetService(ctx, ids["loser"])
-	if err != nil || svc == nil {
-		t.Fatalf("поглощённая запись недоступна по ссылке: %v", err)
-	}
-	if svc.SupersededBy == nil || *svc.SupersededBy != ids["winner"] {
-		t.Errorf("ссылка на победителя = %v, ожидался %d", svc.SupersededBy, ids["winner"])
-	}
-	if counts, err := s.Counts(ctx); err == nil && counts.Total != 1 {
-		t.Errorf("в счётчиках %d записей, ожидалась одна", counts.Total)
+	if len(candidates) != 2 {
+		t.Errorf("опрашивается %d записей из двух", len(candidates))
 	}
 }
 
-// Если хосты снова разъедутся, запись должна вернуться сама — иначе разделение
-// сервисов потребовало бы ручного вмешательства в базу.
-func TestSupersededEntryReturnsWhenItIsDiscoveredAgain(t *testing.T) {
+// Сценарий, из-за которого это и переделывается: адрес спеки, вписанный
+// руками, обязан пережить сканирование кластера.
+func TestManualSpecURLSurvivesASweepOnASharedAddress(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	ids := seed(t, s, "winner", "loser")
+	ids := seed(t, s, "aaa", "bbb")
 
-	one := Discovered{Key: "winner.ns:80", DisplayName: "winner", BaseURL: "http://winner.ns:80",
-		Host: "api.example.com", Namespace: "ns", Backend: "winner.ns:80",
-		PublicKey: "api.example.com"}
-	two := Discovered{Key: "loser.ns:80", DisplayName: "loser", BaseURL: "http://loser.ns:80",
-		Host: "api.example.com", Namespace: "ns", Backend: "loser.ns:80",
-		PublicKey: "api.example.com"}
-	if _, err := s.SyncDiscovered(ctx, "kubernetes", []Discovered{one, two}); err != nil {
+	manual := "http://aaa.ns:80/custom/openapi.json"
+	if err := s.UpdateService(ctx, ids["aaa"], ServiceUpdate{ManualSpecURL: &manual}); err != nil {
 		t.Fatal(err)
 	}
-	// Хосты разъехались: дубля больше нет.
-	two.Host, two.PublicKey = "loser.example.com", "loser.example.com"
-	if _, err := s.SyncDiscovered(ctx, "kubernetes", []Discovered{one, two}); err != nil {
+	if _, err := s.SyncDiscovered(ctx, "kubernetes", []Discovered{
+		{Key: "aaa.ns:80", DisplayName: "aaa", BaseURL: "http://aaa.ns:80",
+			Host: "api.example.com", Namespace: "ns", Backend: "aaa.ns:80",
+			PublicKey: "api.example.com"},
+		{Key: "bbb.ns:80", DisplayName: "bbb", BaseURL: "http://bbb.ns:80",
+			Host: "api.example.com", Namespace: "ns", Backend: "bbb.ns:80",
+			PublicKey: "api.example.com"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	svc, err := s.GetService(ctx, ids["loser"])
+	svc, err := s.GetService(ctx, ids["aaa"])
 	if err != nil || svc == nil {
 		t.Fatal(err)
 	}
-	if svc.SupersededBy != nil {
-		t.Error("запись не вернулась после того, как хост снова стал своим")
+	if svc.ManualSpecURL != manual {
+		t.Errorf("адрес спеки = %q, ожидался вписанный", svc.ManualSpecURL)
 	}
 	if !svc.Present {
-		t.Error("вернувшаяся запись помечена отсутствующей")
+		t.Error("запись пропала из списка после сканирования")
 	}
 }
 
@@ -656,5 +657,67 @@ func TestLabelPrefersTheSpecificationTitleOverTheServiceName(t *testing.T) {
 	}
 	if svc.DisplayName != "api" {
 		t.Errorf("после очистки имя = %q, ожидалось имя backend-Service", svc.DisplayName)
+	}
+}
+
+// Восстановление того, что успела спрятать предыдущая версия.
+//
+// На проде записи уже помечены поглощёнными и убраны из списков. Миграция 010
+// обязана вернуть ровно их и не тронуть те, что отсутствуют в кластере
+// по-настоящему.
+func TestMigrationRestoresWhatTheMergeHid(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	ids := seed(t, s, "winner", "hidden", "really-gone")
+
+	// Приводим базу к состоянию, которое оставила прошлая версия.
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE services SET superseded_by = $1, present = FALSE, auto_probe = FALSE
+		WHERE id = $2`, ids["winner"], ids["hidden"]); err != nil {
+		t.Fatal(err)
+	}
+	// А эта запись пропала из кластера сама — её трогать нельзя.
+	if _, err := s.Pool().Exec(ctx,
+		`UPDATE services SET present = FALSE WHERE id = $1`, ids["really-gone"]); err != nil {
+		t.Fatal(err)
+	}
+	// Откатываем отметку о миграции, чтобы она применилась к этому состоянию.
+	if _, err := s.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version = 10`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("миграция не применилась: %v", err)
+	}
+
+	restored, err := s.GetService(ctx, ids["hidden"])
+	if err != nil || restored == nil {
+		t.Fatal(err)
+	}
+	if !restored.Present || !restored.AutoProbe {
+		t.Errorf("спрятанная запись не восстановлена: present=%v autoProbe=%v",
+			restored.Present, restored.AutoProbe)
+	}
+
+	gone, err := s.GetService(ctx, ids["really-gone"])
+	if err != nil || gone == nil {
+		t.Fatal(err)
+	}
+	if gone.Present {
+		t.Error("запись, отсутствующая в кластере, помечена присутствующей")
+	}
+
+	// И она снова в списке — ради этого всё и делалось.
+	list, err := s.ListServices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range list {
+		if v.ID == ids["hidden"] {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("восстановленной записи нет в списке")
 	}
 }

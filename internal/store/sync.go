@@ -29,8 +29,8 @@ type Discovered struct {
 	// Owner declared on the Ingress by the team that owns the service.
 	Owner OwnerFields
 	// PublicKey is the address a consumer sees — hostname plus path prefix.
-	// Entries sharing one are the same API reached through different backends,
-	// and all but one of them get retired.
+	// Entries sharing one are flagged as possible duplicates of each other;
+	// none of them is hidden.
 	PublicKey string
 }
 
@@ -45,11 +45,6 @@ type SyncResult struct {
 	Gone       int      `json:"gone"`
 	AddedNames []string `json:"addedNames"`
 	GoneNames  []string `json:"goneNames"`
-	// Merged counts entries retired as duplicates of the same public address.
-	// MergedNames holds the survivors, which is the name an operator will be
-	// looking for after noticing that a familiar row disappeared.
-	Merged      int      `json:"merged"`
-	MergedNames []string `json:"mergedNames"`
 }
 
 // SyncDiscovered reconciles the registry with what the cluster reports.
@@ -62,8 +57,7 @@ type SyncResult struct {
 // spec URL — are never overwritten by a sweep.
 func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Discovered) (SyncResult, error) {
 	started := time.Now()
-	res := SyncResult{Found: len(items), AddedNames: []string{},
-		GoneNames: []string{}, MergedNames: []string{}}
+	res := SyncResult{Found: len(items), AddedNames: []string{}, GoneNames: []string{}}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -140,8 +134,9 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 					 AND excluded.spec_url IS DISTINCT FROM services.spec_url
 						THEN NULL
 					ELSE services.next_probe_at END,
-				-- Победитель слияния сам никем не поглощён: если хост снова
-				-- разъехался, запись возвращается в списки без ручного вмешательства.
+				-- Остаток от версии, которая прятала дубли: она могла
+				-- пометить запись поглощённой. Пометка снимается, чтобы
+				-- откат туда и обратно не оставлял скрытых записей.
 				superseded_by = NULL,
 				updated_at   = now()
 			RETURNING (xmax = 0)`,
@@ -174,54 +169,6 @@ func (s *Store) SyncDiscovered(ctx context.Context, source string, items []Disco
 			}
 		}
 	}
-
-	// Схлопывание дублей. Решение принимается здесь, а не в дискавери: какой
-	// из нескольких backend за одним публичным адресом настоящий, видно не по
-	// манифестам, а по тому, у кого есть спека и история. Дискавери сообщает
-	// только группировку.
-	//
-	// Порядок предпочтений — от самого надёжного признака к самому слабому,
-	// и последним идёт ключ, чтобы результат не зависел от порядка обхода:
-	// названный человеком → у кого есть ревизии → кто отвечает → кто здесь
-	// дольше → лексикографически.
-	merged, err := tx.Query(ctx, `
-		WITH ranked AS (
-			SELECT s.id, s.public_key, s.display_name,
-			       first_value(s.id) OVER w AS winner,
-			       row_number()       OVER w AS rank
-			FROM services s
-			WHERE s.source = $1 AND s.present AND COALESCE(s.public_key,'') <> ''
-			WINDOW w AS (
-				PARTITION BY s.public_key
-				ORDER BY s.name_is_explicit DESC,
-				         (SELECT count(*) FROM spec_versions v WHERE v.service_id = s.id) DESC,
-				         (s.probe_status = $2) DESC,
-				         s.first_seen_at ASC,
-				         s.key ASC
-			)
-		)
-		UPDATE services t
-		SET superseded_by = r.winner, present = FALSE, auto_probe = FALSE, updated_at = now()
-		FROM ranked r
-		WHERE t.id = r.id AND r.rank > 1
-		RETURNING (SELECT display_name FROM services WHERE id = r.winner)`,
-		source, ProbeOK)
-	if err != nil {
-		return res, err
-	}
-	for merged.Next() {
-		var winner string
-		if err := merged.Scan(&winner); err != nil {
-			merged.Close()
-			return res, err
-		}
-		res.MergedNames = append(res.MergedNames, winner)
-	}
-	merged.Close()
-	if err := merged.Err(); err != nil {
-		return res, err
-	}
-	res.Merged = len(res.MergedNames)
 
 	rows, err := tx.Query(ctx, `
 		UPDATE services SET present = FALSE, updated_at = now()
@@ -322,8 +269,7 @@ func (s *Store) Counts(ctx context.Context) (Counts, error) {
 			count(*) FILTER (WHERE review_state <> $3
 				AND COALESCE(NULLIF(manual_team,''), NULLIF(spec_team,''),
 				             NULLIF(manual_contact,''), NULLIF(spec_contact,'')) IS NULL)
-		FROM services
-		WHERE superseded_by IS NULL`,
+		FROM services`,
 		ProbeOK, ProbeNoSpec, ReviewIgnored, ProbeUnreachable).
 		Scan(&c.Total, &c.WithSpec, &c.NoSpec, &c.Unreachable, &c.Hidden, &c.ManualOnly,
 			&c.Gone, &c.NoOwner)

@@ -31,6 +31,9 @@ func redactService(s store.Service) store.Service {
 	s.Namespace = ""
 	s.IngressName = ""
 	s.Key = ""
+	// PublicKey остаётся намеренно: это публичный хост с префиксом пути, тот
+	// же, что уже показан в Host. По нему страница помечает возможные дубли —
+	// а две записи на один адрес посетитель видит и без подсказки.
 	s.SpecURL = ""
 	s.SpecURLSource = ""
 	s.ManualSpecURL = ""

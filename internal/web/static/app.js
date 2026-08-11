@@ -125,6 +125,21 @@ function detailText(d) {
 }
 
 const isAdmin = () => Boolean(state.overview?.admin);
+
+// Записи, которые смотрят на тот же публичный адрес.
+//
+// Совпадение — повод присмотреться, а не приговор: ingress-контроллер
+// направляет один адрес ровно в один backend, значит остальные записи, скорее
+// всего, остались от переезда. Но какая из них рабочая, порталу неоткуда
+// знать, поэтому он показывает подозрение, а решает человек.
+function duplicateCount() {
+  return state.services.filter(s => duplicatesOf(s).length).length;
+}
+
+function duplicatesOf(svc) {
+  if (!svc?.publicKey) return [];
+  return state.services.filter(o => o.publicKey === svc.publicKey && o.id !== svc.id);
+}
 const findService = id => state.services.find(s => String(s.id) === String(id));
 
 function toast(message, kind = 'error') {
@@ -294,6 +309,7 @@ function renderSidebar() {
           <span class="svc-line">
             <span class="dot ${esc(svc.probeStatus)}" title="${esc(PROBE_LABEL[svc.probeStatus] || '')}"></span>
             <span class="svc-name">${esc(label(svc))}</span>
+            ${duplicatesOf(svc).length ? '<span class="dup-dot" title="Возможный дубль">≡</span>' : ''}
             <span class="svc-count">${svc.probeStatus === 'ok' ? svc.endpointCount : ''}</span>
           </span>
           <span class="svc-host">${esc(svc.host || svc.baseUrl || '')}</span>
@@ -312,6 +328,7 @@ function matchesFilter(svc) {
   if (state.stateFilter === 'manualOnly' && (svc.autoProbe !== false)) return false;
   if (state.stateFilter === 'withSpec' && svc.probeStatus !== 'ok') return false;
   if (state.stateFilter === 'noSpec' && svc.probeStatus === 'ok') return false;
+  if (state.stateFilter === 'duplicates' && !duplicatesOf(svc).length) return false;
   if (state.stateFilter === 'ignored' && svc.reviewState !== 'ignored') return false;
   if (state.stateFilter !== 'ignored' && svc.reviewState === 'ignored') return false;
 
@@ -340,6 +357,9 @@ function urlRow(svc) {
       <td>
         <a href="#/s/${svc.id}">${esc(label(svc))}</a>
         ${badges}
+        ${duplicatesOf(svc).length
+          ? '<span class="badge dup" title="Тот же публичный адрес, что и у другой записи">возможный дубль</span>'
+          : ''}
       </td>
       <td class="addr">${address ? esc(address) : '<span class="muted">—</span>'}</td>
       <td class="owner-cell">${svc.owner?.team
@@ -382,6 +402,7 @@ function renderURLs() {
         ${chip('withSpec', 'со спецификацией', counts.withSpec)}
         ${chip('noSpec', 'без спецификации', (counts.noSpec || 0) + (counts.unreachable || 0))}
         ${chip('noOwner', 'без владельца', counts.noOwner)}
+        ${duplicateCount() ? chip('duplicates', 'возможные дубли', duplicateCount()) : ''}
         ${isAdmin() ? chip('manualOnly', 'только вручную', counts.manualOnly) : ''}
         ${isAdmin() ? chip('ignored', 'спрятанные', counts.hidden) : ''}
         ${isAdmin() ? '<button class="btn small" id="sync-now" style="margin-left:auto">Пересканировать кластер</button>' : ''}
@@ -498,11 +519,7 @@ function serviceHeader(svc, tab) {
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
-      ${svc.supersededBy ? `<div class="notice-box">Эта запись объединена с
-        <a href="#/s/${svc.supersededBy}">другой</a>: тот же публичный адрес, другой
-        backend в кластере. Она больше не опрашивается и не показывается в списках —
-        история оставлена на случай разбирательства. Если хосты снова разъедутся,
-        запись вернётся сама.</div>` : ''}
+      ${duplicateNotice(svc)}
       ${svc.usingFallback ? `<div class="notice-box">Основной адрес не отвечал — опрос идёт по запасному:
         <code>${esc(svc.fallbackUrl || '')}</code>.
         Ближайшее сканирование кластера снова попробует основной.</div>` : ''}
@@ -522,6 +539,24 @@ function serviceHeader(svc, tab) {
         ${isAdmin() ? `<a class="tab ${tab === 'config' ? 'active' : ''}" href="${base}/config">Настройка</a>` : ''}
       </div>
     </div>`;
+}
+
+// Подозрение на дубль показывается обеим записям сразу, с основанием и со
+// ссылками друг на друга. Портал ничего не выбирает и ничего не прячет: он
+// один раз попробовал решать сам, ошибся, и записи пропадали из списка.
+function duplicateNotice(svc) {
+  const others = duplicatesOf(svc);
+  if (!others.length) return '';
+  const links = others.map(o =>
+    `<a href="#/s/${o.id}">${esc(label(o))}</a>${o.namespace ? ` <span class="muted">(${esc(o.namespace)})</span>` : ''}`
+  ).join(', ');
+  return `<div class="notice-box">
+    Возможный дубль: тот же публичный адрес <code>${esc(svc.publicKey)}</code>, что и у ${links}.
+    Ingress-контроллер направляет один адрес ровно в один backend, поэтому рабочей
+    здесь, скорее всего, является одна запись из ${others.length + 1}, а остальные
+    остались от переезда. Какая именно — портал не решает: посмотрите на историю
+    и на дату проверки, а лишние спрячьте на вкладке «Настройка».
+  </div>`;
 }
 
 // The owner block is shown even when empty: an explicit "владелец не указан"
@@ -566,7 +601,20 @@ function bindProbe(svc) {
 function renderService() {
   const svc = findService(state.route.id);
   if (!svc) {
-    el('main').innerHTML = '<div class="page"><div class="empty">Сервис не найден.</div></div>';
+    // Страница строилась только из общего списка, и запись, которой там нет,
+    // упиралась в «сервис не найден» — хотя сама запись существует. Спрашиваем
+    // сервер напрямую: ссылка на сервис должна работать всегда.
+    el('main').innerHTML = '<div class="page"><div class="empty">Загружаю…</div></div>';
+    api(`/api/services/${encodeURIComponent(state.route.id)}`)
+      .then(body => {
+        const one = body.service || body;
+        if (!one || !one.id) throw new Error('нет данных');
+        state.services = state.services.concat([one]);
+        renderService();
+      })
+      .catch(() => {
+        el('main').innerHTML = '<div class="page"><div class="empty">Сервис не найден.</div></div>';
+      });
     return;
   }
   // A bookmark or a link shared by an admin should not dead-end on a tab that

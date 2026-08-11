@@ -358,21 +358,23 @@ type Service struct {
 	// poll actually used.
 	FallbackURL   string `json:"fallbackUrl,omitempty"`
 	UsingFallback bool   `json:"usingFallback"`
-	// SupersededBy points at the entry that absorbed this one as a duplicate of
-	// the same public address. Set means the entry is retired: out of the lists
-	// and out of the poll, reachable only by a direct link.
-	SupersededBy *int64   `json:"supersededBy,omitempty"`
-	ReviewState  string   `json:"reviewState"`
-	ProbeStatus  string   `json:"probeStatus"`
-	Present      bool     `json:"present"`
-	Host         string   `json:"host,omitempty"`
-	Namespace    string   `json:"namespace,omitempty"`
-	IngressName  string   `json:"ingressName,omitempty"`
-	Backend      string   `json:"backend,omitempty"`
-	GroupID      *int64   `json:"groupId,omitempty"`
-	GroupName    string   `json:"groupName,omitempty"`
-	Tags         []string `json:"tags"`
-	Notes        string   `json:"notes,omitempty"`
+	// PublicKey is the address a consumer sees — hostname plus path prefix.
+	// Entries sharing one are reached through the same door, which usually
+	// means one of them is a leftover. The portal points that out and stops
+	// there: which of them is the real one is a judgement it has no reliable
+	// way to make, and it got that judgement wrong when it tried.
+	PublicKey   string   `json:"publicKey,omitempty"`
+	ReviewState string   `json:"reviewState"`
+	ProbeStatus string   `json:"probeStatus"`
+	Present     bool     `json:"present"`
+	Host        string   `json:"host,omitempty"`
+	Namespace   string   `json:"namespace,omitempty"`
+	IngressName string   `json:"ingressName,omitempty"`
+	Backend     string   `json:"backend,omitempty"`
+	GroupID     *int64   `json:"groupId,omitempty"`
+	GroupName   string   `json:"groupName,omitempty"`
+	Tags        []string `json:"tags"`
+	Notes       string   `json:"notes,omitempty"`
 
 	// Owner is who to ask about this service. Manual values win over anything
 	// the sweep discovered, per field.
@@ -414,7 +416,7 @@ const serviceColumns = `
 	CASE WHEN s.name_is_explicit THEN s.display_name
 	     ELSE COALESCE(NULLIF(v.title,''), s.display_name) END,
 	s.base_url,
-	COALESCE(s.fallback_url,''), s.using_fallback, s.superseded_by,
+	COALESCE(s.fallback_url,''), s.using_fallback, COALESCE(s.public_key,''),
 	s.review_state, s.probe_status, s.present,
 	COALESCE(s.host,''), COALESCE(s.namespace,''), COALESCE(s.ingress_name,''), COALESCE(s.backend,''),
 	s.group_id, COALESCE(g.name,''), s.tags, s.notes,
@@ -451,7 +453,7 @@ func scanService(row pgx.Row) (Service, error) {
 	var s Service
 	var groupID *int64
 	err := row.Scan(&s.ID, &s.Key, &s.Source, &s.DisplayName, &s.NameIsExplicit, &s.Label, &s.BaseURL,
-		&s.FallbackURL, &s.UsingFallback, &s.SupersededBy,
+		&s.FallbackURL, &s.UsingFallback, &s.PublicKey,
 		&s.ReviewState, &s.ProbeStatus, &s.Present,
 		&s.Host, &s.Namespace, &s.IngressName, &s.Backend,
 		&groupID, &s.GroupName, &s.Tags, &s.Notes,
@@ -477,11 +479,7 @@ func scanService(row pgx.Row) (Service, error) {
 }
 
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
-	// Записи, поглощённые как дубли, не показываются: снаружи это тот же
-	// адрес и тот же API, и в списке они были бы вторым именем одного и того
-	// же. По прямой ссылке страница по-прежнему открывается — с пояснением.
 	rows, err := s.pool.Query(ctx, `SELECT `+serviceColumns+serviceFrom+`
-		WHERE s.superseded_by IS NULL
 		ORDER BY g.position NULLS LAST, g.name NULLS LAST, s.display_name`)
 	if err != nil {
 		return nil, err
