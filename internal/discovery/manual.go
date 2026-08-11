@@ -22,14 +22,23 @@ var blockedCIDRs = []string{
 // ResolveManualSpecURL turns an address a person typed into one the poller can
 // actually use.
 //
-// The address they see is the public hostname; the address the poller uses is
-// the in-cluster one. Asking someone to type an internal address they are never
-// shown would be absurd, so a URL on the public host is accepted and only its
-// path is kept — the poller keeps talking to the address it already knows.
+// A bare path is resolved against the address the registry already polls — that
+// is the common case, and nobody should have to type a host they are shown
+// anyway.
 //
-// Everything else is refused. Without that rule this endpoint would let anyone
-// who can reach the portal — which has no login for reading — make it fetch an
-// arbitrary URL from inside the cluster.
+// A full address is kept as typed, host and all. It used to be rewritten onto
+// the in-cluster address, on the theory that the two are the same service by
+// different names. They are not always: plenty of services publish their
+// documentation only through the ingress — a rewrite rule, a sidecar, a route
+// that simply is not wired on the backend port. Someone who types the public
+// address has looked, found the specification there, and is telling the portal
+// where it is. Answering with a different address and then failing to fetch it
+// is both wrong and baffling.
+//
+// The confinement stays: only the service's own two addresses are accepted.
+// Without that rule this endpoint would let anyone who can reach the portal —
+// which has no login for reading — make it fetch an arbitrary URL from inside
+// the cluster.
 func ResolveManualSpecURL(baseURL, publicHost, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -65,8 +74,11 @@ func ResolveManualSpecURL(baseURL, publicHost, raw string) (string, error) {
 		return "", err
 	}
 
-	// Keep only the path: the poller reaches the service by the address the
-	// registry holds, which may differ from the one a human sees.
+	// Хост из введённого адреса сохраняется: человек выбрал его сознательно.
+	// Голый путь хоста не несёт и достраивается по адресу опроса.
+	if typed, err := url.Parse(raw); err == nil && typed.Host != "" {
+		return target.String(), nil
+	}
 	resolved := *base
 	resolved.Path = target.Path
 	resolved.RawQuery = target.RawQuery

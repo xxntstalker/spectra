@@ -280,6 +280,16 @@ func addressesFor(svc store.Service) []address {
 	return []address{primary, backup}
 }
 
+// hostFixed reports whether the spec address must be used exactly as stored.
+//
+// An address a person typed is host-fixed. The rest of the poll may try the
+// service by either of its two addresses, but a manual address is not a guess
+// to be improved on: it usually points at the public host precisely because the
+// documentation is not served on the backend port at all.
+func hostFixed(svc store.Service) bool {
+	return svc.ManualSpecURL != "" && svc.SpecURL == svc.ManualSpecURL
+}
+
 // specURLOn re-points a known spec address at another base address. The path
 // identifies the document; the host is only how we get to it.
 func specURLOn(specURL, base string) string {
@@ -325,7 +335,9 @@ func (c *Collector) pollOne(ctx context.Context, svc store.Service, settings sto
 		failed []string
 	)
 	for i, addr := range addresses {
-		res = c.pollAddress(ctx, client, svc, addr, now, perAddress)
+		// Адрес спеки, заданный человеком, не зависит от того, каким путём мы
+		// идём к сервису, — пробуем его только на первой попытке.
+		res = c.pollAddress(ctx, client, svc, addr, now, perAddress, i == 0 || !hostFixed(svc))
 		if res.probe.Status != store.ProbeOK {
 			failed = append(failed, addr.baseURL+": "+res.probe.Error)
 		}
@@ -402,7 +414,8 @@ type pollResult struct {
 }
 
 func (c *Collector) pollAddress(ctx context.Context, client *discovery.Client,
-	svc store.Service, addr address, now time.Time, budget time.Duration) pollResult {
+	svc store.Service, addr address, now time.Time, budget time.Duration,
+	trySpecURL bool) pollResult {
 
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
@@ -410,8 +423,17 @@ func (c *Collector) pollAddress(ctx context.Context, client *discovery.Client,
 	probe := store.ProbeResult{ServiceID: svc.ID, CheckedAt: now, UsingFallback: addr.fallback}
 
 	// A spec address learned on one host applies to the other: same service,
-	// same document, different way in.
-	specURL := specURLOn(svc.SpecURL, addr.baseURL)
+	// same document, different way in. One a person typed does not — it is an
+	// instruction, not an observation.
+	specURL := svc.SpecURL
+	if !hostFixed(svc) {
+		specURL = specURLOn(svc.SpecURL, addr.baseURL)
+	}
+	if !trySpecURL {
+		// Уже пробовали ровно этот адрес на прошлой попытке: он от адреса
+		// опроса не зависит, и повтор был бы лишним запросом к чужому сервису.
+		specURL = ""
+	}
 	if specURL != "" {
 		// Validators belong to the host that issued them. Switching addresses
 		// means downloading the document once, rather than trusting an ETag

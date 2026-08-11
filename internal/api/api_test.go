@@ -457,18 +457,27 @@ func TestManualSpecURLIsConfinedToTheService(t *testing.T) {
 		}
 	}
 
-	// A path, or a URL on the public host, is fine — only the path is kept,
-	// because polling goes to the address the registry holds.
-	for _, good := range []string{"/v3/api-docs", "http://orders.example.com/v3/api-docs"} {
-		rec := e.do(t, "PATCH", "/api/services/"+id, `{"manualSpecUrl":"`+good+`"}`, true)
+	// Голый путь достраивается по адресу опроса; полный адрес сохраняется как
+	// введён, вместе с хостом. Второе — потому что документация нередко
+	// отдаётся только через ingress, и подмена хоста на внутренний приводила к
+	// тому, что в ответе стоял адрес, по которому спеки нет.
+	for _, c := range []struct{ typed, want string }{
+		{"/v3/api-docs", "http://orders.shop:80/v3/api-docs"},
+		{"http://orders.example.com/v3/api-docs", "http://orders.example.com/v3/api-docs"},
+		{"https://orders.example.com/swagger.json", "https://orders.example.com/swagger.json"},
+	} {
+		rec := e.do(t, "PATCH", "/api/services/"+id, `{"manualSpecUrl":"`+c.typed+`"}`, true)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("%s отклонён: %d %s", good, rec.Code, rec.Body)
+			t.Fatalf("%s отклонён: %d %s", c.typed, rec.Code, rec.Body)
 		}
 		svc := decode[struct {
 			Service store.Service `json:"service"`
 		}](t, rec).Service
-		if svc.SpecURL != "http://orders.shop:80/v3/api-docs" {
-			t.Errorf("сохранён адрес %q, ожидался внутренний с путём из ввода", svc.SpecURL)
+		if svc.SpecURL != c.want {
+			t.Errorf("введено %q → сохранено %q, ожидалось %q", c.typed, svc.SpecURL, c.want)
+		}
+		if svc.ManualSpecURL != c.want {
+			t.Errorf("введено %q → в поле ввода вернулось %q", c.typed, svc.ManualSpecURL)
 		}
 	}
 }

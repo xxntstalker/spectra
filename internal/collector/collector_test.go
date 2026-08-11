@@ -709,3 +709,58 @@ func TestSweepsDoNotOverlap(t *testing.T) {
 		t.Errorf("одновременных запросов к сервису: %d — обходы наложились", peak.Load())
 	}
 }
+
+// Спека отдаётся только через ingress: на backend-порту её нет. Человек
+// вписывает публичный адрес — и опрос обязан пойти именно туда, а не
+// переписать хост на внутренний, как делалось раньше.
+func TestManualAddressIsPolledExactlyAsTyped(t *testing.T) {
+	body := spec
+	h := newHarness(t, nil)
+
+	var backendHits atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHits.Add(1)
+		http.NotFound(w, r) // на backend-порту документации нет
+	}))
+	t.Cleanup(backend.Close)
+
+	var publicHits atomic.Int64
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/docs/openapi.json" {
+			http.NotFound(w, r)
+			return
+		}
+		publicHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(public.Close)
+
+	id := h.registerPair(t, "ingress-only", backend.URL, public.URL)
+
+	manual := public.URL + "/docs/openapi.json"
+	if err := h.store.UpdateService(context.Background(), id,
+		store.ServiceUpdate{ManualSpecURL: &manual}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.poll(t)
+
+	svc := h.service(t, id)
+	if svc.ProbeStatus != store.ProbeOK {
+		t.Fatalf("статус = %q (%s)", svc.ProbeStatus, svc.LastError)
+	}
+	if svc.SpecURL != manual {
+		t.Errorf("опрошен адрес %q, а вписан был %q", svc.SpecURL, manual)
+	}
+	if publicHits.Load() == 0 {
+		t.Error("публичный адрес не опрошен — вписанное значение проигнорировано")
+	}
+	if svc.VersionCount != 1 {
+		t.Errorf("ревизий %d, ожидалась одна", svc.VersionCount)
+	}
+	// Перебор путей по backend не нужен: адрес известен и он сработал.
+	if n := backendHits.Load(); n != 0 {
+		t.Errorf("backend опрошен %d раз, хотя адрес спеки задан явно", n)
+	}
+}
