@@ -14,7 +14,6 @@ const state = {
   filter: '',
   stateFilter: '',
   route: { view: 'urls' },
-  auth: sessionStorage.getItem('spectra-auth') || '',
 };
 
 const PROBE_LABEL = {
@@ -68,16 +67,27 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
 
 const el = id => document.getElementById(id);
 
+// Как называть сервис на экране. Имя по умолчанию — имя backend-Service, и оно
+// повторяется по кластеру десятками: «api», «web», «backend». Настоящее
+// название берётся из спеки, но уступает тому, что кто-то вписал сам.
+// Правило одно и то же на сервере (поле label) и здесь — на случай ответа,
+// собранного старой версией портала.
+const label = svc =>
+  svc.label || (svc.nameIsExplicit ? svc.displayName : (svc.title || svc.displayName));
+
+// Вход держится на сессионной куке, которую браузер ставит сам и делит между
+// вкладками. Страница пароль не хранит — раньше он лежал в sessionStorage,
+// из-за чего каждая новая вкладка начинала неавторизованной.
 async function api(path, options = {}) {
   const headers = Object.assign({}, options.headers);
-  if (state.auth) headers['Authorization'] = 'Basic ' + state.auth;
   if (options.body) headers['Content-Type'] = 'application/json';
 
-  const res = await fetch(path, Object.assign({}, options, { headers }));
+  const res = await fetch(path, Object.assign({}, options, {
+    headers, credentials: 'same-origin',
+  }));
   if (res.status === 401) {
-    // Stale or missing credentials: drop them so the next attempt asks again.
-    state.auth = '';
-    sessionStorage.removeItem('spectra-auth');
+    // Сессия истекла или её не было: обновляем шапку, чтобы появилась кнопка входа.
+    if (state.overview) state.overview.admin = false;
     renderAuthBox();
     throw new Error('Нужен вход администратора');
   }
@@ -114,7 +124,7 @@ function detailText(d) {
   return fn ? fn(d.subject || '') : `${d.code} ${d.subject || ''}`.trim();
 }
 
-const isAdmin = () => Boolean(state.auth);
+const isAdmin = () => Boolean(state.overview?.admin);
 const findService = id => state.services.find(s => String(s.id) === String(id));
 
 function toast(message, kind = 'error') {
@@ -192,10 +202,12 @@ function renderAuthBox() {
       if (user === null) return;
       const password = prompt('Пароль');
       if (password === null) return;
-      state.auth = btoa(`${user}:${password}`);
       try {
-        await api('/api/settings'); // cheapest endpoint that requires the login
-        sessionStorage.setItem('spectra-auth', state.auth);
+        // Пароль уходит один раз, в обмен на куку; в странице он не остаётся.
+        await api('/api/login', {
+          method: 'POST',
+          headers: { Authorization: 'Basic ' + btoa(`${user}:${password}`) },
+        });
         await reload();
       } catch (err) {
         toast(err.message);
@@ -204,10 +216,11 @@ function renderAuthBox() {
   }
   const logout = el('logout');
   if (logout) {
-    logout.addEventListener('click', () => {
-      state.auth = '';
-      sessionStorage.removeItem('spectra-auth');
-      reload();
+    logout.addEventListener('click', async () => {
+      try {
+        await api('/api/logout', { method: 'POST' });
+      } catch { /* кука всё равно перевыставляется просроченной */ }
+      await reload();
     });
   }
 }
@@ -271,15 +284,19 @@ function renderSidebar() {
     parts.push(`<div class="group-title">${esc(name)}</div>`);
     for (const svc of list) {
       const active = state.route.view === 'service' && String(state.route.id) === String(svc.id);
+      // Имя сервиса берётся из имени backend-Service, и по кластеру оно
+      // повторяется постоянно: десяток «api», «web», «backend». Одного имени
+      // мало, чтобы отличить строки друг от друга, поэтому под ним идёт хост —
+      // он и есть то, чем сервисы различаются.
       parts.push(`
-        <a class="svc ${active ? 'active' : ''}" href="#/s/${svc.id}">
+        <a class="svc ${active ? 'active' : ''}" href="#/s/${svc.id}"
+           title="${esc(label(svc))}${svc.host ? ' — ' + esc(svc.host) : ''}">
           <span class="svc-line">
             <span class="dot ${esc(svc.probeStatus)}" title="${esc(PROBE_LABEL[svc.probeStatus] || '')}"></span>
-            <span class="svc-name">${esc(svc.displayName)}</span>
+            <span class="svc-name">${esc(label(svc))}</span>
+            <span class="svc-count">${svc.probeStatus === 'ok' ? svc.endpointCount : ''}</span>
           </span>
-          <span class="svc-meta">${svc.probeStatus === 'ok'
-            ? `${svc.endpointCount} эндп`
-            : esc(PROBE_LABEL[svc.probeStatus] || '')}</span>
+          <span class="svc-host">${esc(svc.host || svc.baseUrl || '')}</span>
         </a>`);
     }
   }
@@ -300,7 +317,7 @@ function matchesFilter(svc) {
 
   const needle = state.filter.trim().toLowerCase();
   if (!needle) return true;
-  return [svc.displayName, svc.host, svc.namespace, svc.baseUrl, svc.title, svc.groupName,
+  return [label(svc), svc.displayName, svc.host, svc.namespace, svc.baseUrl, svc.title, svc.groupName,
           ...(svc.tags || [])]
     .filter(Boolean).some(v => v.toLowerCase().includes(needle));
 }
@@ -321,7 +338,7 @@ function urlRow(svc) {
     <tr>
       <td><span class="dot ${esc(svc.probeStatus)}" title="${esc(PROBE_LABEL[svc.probeStatus] || '')}"></span></td>
       <td>
-        <a href="#/s/${svc.id}">${esc(svc.displayName)}</a>
+        <a href="#/s/${svc.id}">${esc(label(svc))}</a>
         ${badges}
       </td>
       <td class="addr">${address ? esc(address) : '<span class="muted">—</span>'}</td>
@@ -471,7 +488,7 @@ function serviceHeader(svc, tab) {
     <div class="svc-header">
       <h1>
         <span class="dot ${esc(svc.probeStatus)}"></span>
-        ${esc(svc.displayName)} ${badges.join(' ')}
+        ${esc(label(svc))} ${badges.join(' ')}
         ${isAdmin() ? '<button class="btn small" id="probe-now" style="margin-left:auto">Опросить сейчас</button>' : ''}
       </h1>
       <p class="svc-sub">
@@ -481,6 +498,11 @@ function serviceHeader(svc, tab) {
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
+      ${svc.supersededBy ? `<div class="notice-box">Эта запись объединена с
+        <a href="#/s/${svc.supersededBy}">другой</a>: тот же публичный адрес, другой
+        backend в кластере. Она больше не опрашивается и не показывается в списках —
+        история оставлена на случай разбирательства. Если хосты снова разъедутся,
+        запись вернётся сама.</div>` : ''}
       ${svc.usingFallback ? `<div class="notice-box">Основной адрес не отвечал — опрос идёт по запасному:
         <code>${esc(svc.fallbackUrl || '')}</code>.
         Ближайшее сканирование кластера снова попробует основной.</div>` : ''}
@@ -589,7 +611,13 @@ function renderConfig(svc) {
   el('config').innerHTML = `
     <h2>Настройка сервиса</h2>
     <form id="svc-form" class="form">
-      <label>Название<input name="displayName" value="${esc(svc.displayName)}"></label>
+      <label>Название
+        <input name="displayName" value="${esc(svc.nameIsExplicit ? svc.displayName : '')}"
+               placeholder="${esc(label(svc))}">
+        <span class="muted">${svc.nameIsExplicit
+          ? 'Вписано вручную. Очистите поле, чтобы вернуться к названию из спецификации.'
+          : 'Пусто — берётся из спецификации, а если её нет, из имени backend-Service.'}</span>
+      </label>
       <label>Группа
         <select name="groupId">${groupOptions}</select>
       </label>
@@ -635,7 +663,10 @@ function renderConfig(svc) {
     event.preventDefault();
     const form = new FormData(event.target);
     const body = {
-      displayName: form.get('displayName').trim() || svc.displayName,
+      // Пустое поле — не «оставить как было», а «убрать своё название»:
+      // сервер вернёт запись к имени backend-Service, и снова начнёт
+      // действовать заголовок из спецификации.
+      displayName: form.get('displayName').trim(),
       notes: form.get('notes'),
       tags: form.get('tags').split(',').map(t => t.trim()).filter(Boolean),
       manualSpecUrl: form.get('manualSpecUrl').trim(),
