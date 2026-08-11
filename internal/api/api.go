@@ -279,13 +279,28 @@ func (s *Server) getSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Адрес в спеке всегда переписывается под то, что портал готов показать.
+	//
+	// С включённым прокси это сам портал — тогда «Try it out» идёт через него.
+	// С выключенным — публичный адрес сервиса: отправлять запросы порталу
+	// нельзя, но документация обязана честно называть, где живёт этот API.
+	// Внутренний адрес из спеки не годится ни в том, ни в другом случае: он
+	// недостижим снаружи и не показывается анонимному читателю.
+	//
+	// Оставить спеку вовсе без адресов тоже нельзя: вьюер подставляет вместо
+	// них адрес текущей страницы, и в примерах curl оказывается сам портал.
 	body := version.Spec
-	if s.cfg.HTTP.ProxyEnabled {
-		if doc, parseErr := openapi.Parse(version.Spec); parseErr == nil {
+	if doc, parseErr := openapi.Parse(version.Spec); parseErr == nil {
+		switch {
+		case s.cfg.HTTP.ProxyEnabled:
 			doc.SetProxyServers("/proxy/"+strconv.FormatInt(svc.ID, 10), "Через портал")
-			if rewritten, marshalErr := doc.JSON(); marshalErr == nil {
-				body = rewritten
-			}
+		case publicAddress(*svc) != "":
+			doc.SetProxyServers(publicAddress(*svc), "Адрес сервиса")
+		default:
+			doc.StripServers()
+		}
+		if rewritten, marshalErr := doc.JSON(); marshalErr == nil {
+			body = rewritten
 		}
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

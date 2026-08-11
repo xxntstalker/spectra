@@ -220,6 +220,28 @@ func (d *Doc) SetProxyServers(prefix, description string) {
 	}
 }
 
+// StripServers removes every address the document names.
+//
+// It is used when the proxy is off. What is left then is a document to read,
+// not to execute: there is no address the portal is willing to send a request
+// to, and a viewer that shows one invites the reader to fire it straight from
+// their browser — past the portal, at an address that is usually reachable
+// only from inside the cluster.
+//
+// It also closes a leak. Specifications routinely declare their own internal
+// address in `servers`, and the specification endpoint is public. Everything
+// else about the cluster is redacted for anonymous readers; this was the one
+// place the address came back.
+func (d *Doc) StripServers() {
+	if d.IsSwagger2() {
+		delete(d.Root, "host")
+		delete(d.Root, "schemes")
+		delete(d.Root, "basePath")
+		return
+	}
+	delete(d.Root, "servers")
+}
+
 func normalizeKeys(v any) any {
 	switch t := v.(type) {
 	case map[string]any:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -392,6 +393,52 @@ func TestSpecServersArePointedAtTheProxy(t *testing.T) {
 	}
 }
 
+// С выключенным прокси адресов в спеке не остаётся вовсе.
+//
+// Отправлять запрос всё равно некуда — портал его не пропустит, — а сам адрес
+// обычно внутренний. Всё остальное про кластер анониму вырезается, и спека
+// была единственным местом, где адрес возвращался обратно.
+func TestProxyOffLeavesNoAddressInTheSpecification(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.HTTP.ProxyEnabled = false })
+	e.seed(t, standardService(), store.Discovered{
+		Key: "legacy.shop:80", DisplayName: "legacy", BaseURL: "http://legacy.shop:80",
+	})
+	ctx := context.Background()
+	e.store.InsertVersion(ctx, &store.Version{ServiceID: e.ids["orders"],
+		Hash: "h", CapturedAt: time.Now(), Spec: []byte(spec)})
+	e.store.InsertVersion(ctx, &store.Version{ServiceID: e.ids["legacy"],
+		Hash: "h", CapturedAt: time.Now(), Spec: []byte(swagger2)})
+
+	for _, admin := range []bool{false, true} {
+		rec := e.do(t, "GET", "/api/services/"+itoa(e.ids["orders"])+"/spec", "", admin)
+		if strings.Contains(rec.Body.String(), "orders.internal") {
+			t.Errorf("админ=%v: внутренний адрес отдан в спеке: %s", admin, rec.Body.String())
+		}
+		// Адрес не вырезается совсем, а заменяется публичным: без servers
+		// вьюер подставляет адрес текущей страницы, и в примерах curl
+		// оказывается сам портал.
+		servers, ok := decode[map[string]any](t, rec)["servers"].([]any)
+		if !ok || len(servers) != 1 {
+			t.Fatalf("админ=%v: servers = %v", admin, decode[map[string]any](t, rec)["servers"])
+		}
+		if url := servers[0].(map[string]any)["url"]; url != "http://orders.example.com" {
+			t.Errorf("админ=%v: адрес в спеке = %v, ожидался публичный хост", admin, url)
+		}
+
+		// Свагер 2.0: у него адрес разложен на host/basePath.
+		legacy := decode[map[string]any](t, e.do(t, "GET", "/api/services/"+itoa(e.ids["legacy"])+"/spec", "", admin))
+		if strings.Contains(fmt.Sprint(legacy), "legacy.internal") {
+			t.Errorf("админ=%v: внутренний адрес пережил замену: %v", admin, legacy)
+		}
+	}
+
+	// Сама спека при этом читается: заменены адреса, а не содержание.
+	got := decode[map[string]any](t, e.do(t, "GET", "/api/services/"+itoa(e.ids["orders"])+"/spec", "", false))
+	if _, ok := got["paths"].(map[string]any)["/orders"]; !ok {
+		t.Error("вместе с адресами потерялись эндпоинты")
+	}
+}
+
 // The address a person types is confined to the service's own host: otherwise
 // a page anyone can reach becomes a request forger inside the cluster.
 func TestManualSpecURLIsConfinedToTheService(t *testing.T) {
@@ -664,5 +711,46 @@ func TestMetricsExposeWhatYouWouldAlertOn(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("в метриках утёк адрес сервиса: %q", forbidden)
 		}
+	}
+}
+
+// Публичный адрес выбирается по хосту, а не по порядку полей: какой из двух
+// адресов публичный, зависит от SPECTRA_K8S_TARGET.
+func TestPublicAddressIsTheOneBuiltOnTheHost(t *testing.T) {
+	cases := []struct {
+		name string
+		svc  store.Service
+		want string
+	}{
+		{"опрос внутрь, публичный — запасной",
+			store.Service{Host: "api.example.com", BaseURL: "http://api.shop:8080",
+				FallbackURL: "https://api.example.com"}, "https://api.example.com"},
+		{"опрос наружу, публичный — основной",
+			store.Service{Host: "api.example.com", BaseURL: "https://api.example.com",
+				FallbackURL: "http://api.shop:8080"}, "https://api.example.com"},
+		{"с префиксом пути",
+			store.Service{Host: "api.example.com", BaseURL: "http://api.shop:8080/v2",
+				FallbackURL: "https://api.example.com/v2"}, "https://api.example.com/v2"},
+		{"запасного ещё нет — схема от известного адреса",
+			store.Service{Host: "app.service1", BaseURL: "http://app.service1:8080"},
+			"http://app.service1:8080"},
+		{"хоста нет вовсе",
+			store.Service{BaseURL: "http://app.ns:8080"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := publicAddress(c.svc); got != c.want {
+				t.Errorf("публичный адрес = %q, ожидался %q", got, c.want)
+			}
+		})
+	}
+}
+
+// Внутренний адрес не должен попасть в спеку ни при каком раскладе полей.
+func TestPublicAddressNeverReturnsTheInClusterOne(t *testing.T) {
+	svc := store.Service{Host: "api.example.com", BaseURL: "http://api.shop:8080",
+		FallbackURL: "https://api.example.com"}
+	if got := publicAddress(svc); strings.Contains(got, "api.shop") {
+		t.Errorf("в спеку ушёл внутренний адрес: %q", got)
 	}
 }

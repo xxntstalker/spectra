@@ -24,26 +24,47 @@
       const version = params.get('version');
       if (version) specURL += '?version=' + encodeURIComponent(version);
 
-      const mount = document.createElement('script');
-      mount.id = 'api-reference';
-      mount.dataset.url = specURL;
-      mount.dataset.configuration = JSON.stringify({
-        theme: 'default',
-        darkMode: (function () {
-          var t = params.get('theme');
-          if (t === 'dark') return true;
-          if (t === 'light') return false;
-          return window.matchMedia('(prefers-color-scheme: dark)').matches;
-        })(),
-        hideDownloadButton: false,
-        // The portal already provides its own navigation between services.
-        showSidebar: true
-      });
-      document.body.appendChild(mount);
+      const darkMode = (function () {
+        var t = params.get('theme');
+        if (t === 'dark') return true;
+        if (t === 'light') return false;
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
+      })();
 
-      const bundle = document.createElement('script');
-      bundle.src = '/vendor/scalar.standalone.js';
-      document.body.appendChild(bundle);
+      function render(proxyEnabled) {
+        const mount = document.createElement('script');
+        mount.id = 'api-reference';
+        mount.dataset.url = specURL;
+        mount.dataset.configuration = JSON.stringify({
+          theme: 'default',
+          darkMode: darkMode,
+          hideDownloadButton: false,
+          // The portal already provides its own navigation between services.
+          showSidebar: true,
+          // Без прокси отправлять запрос некуда: портал его не пропустит, а
+          // адрес сервиса из спеки вырезан — он внутренний и показывать его
+          // читателю нельзя. Кнопка, которая всегда упирается в ошибку, хуже
+          // отсутствующей.
+          hideTestRequestButton: !proxyEnabled,
+          hideClientButton: !proxyEnabled
+        });
+        document.body.appendChild(mount);
+
+        const bundle = document.createElement('script');
+        bundle.src = '/vendor/scalar.standalone.js';
+        document.body.appendChild(bundle);
+      }
+
+      // Состояние спрашивается у сервера, а не берётся из адреса страницы:
+      // параметром можно было бы вернуть себе кнопку, которая всё равно
+      // получит отказ.
+      //
+      // Логин учитывается по той же причине: прокси — операция под учётной
+      // записью, и посетителю без неё кнопка тоже не даёт ничего, кроме 401.
+      fetch('/api/overview', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (o) { render(Boolean(o.proxyEnabled) && Boolean(o.admin)); })
+        .catch(function () { render(false); });
     })();
   </script>
 </body>
