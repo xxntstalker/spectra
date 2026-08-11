@@ -181,7 +181,14 @@ func (s *Store) InsertChange(ctx context.Context, c *Change) error {
 
 func (s *Store) ListChanges(ctx context.Context, serviceID int64, limit int) ([]Change, error) {
 	query := `
-		SELECT c.id, c.service_id, s.display_name, c.from_version_id, c.to_version_id,
+		SELECT c.id, c.service_id,
+		       -- То же правило, что и в списках: имя, которое кто-то выбрал,
+		       -- иначе заголовок из спеки, иначе имя backend-Service.
+		       CASE WHEN s.name_is_explicit THEN s.display_name
+		            ELSE COALESCE(NULLIF((SELECT title FROM spec_versions
+		                                  WHERE service_id = s.id ORDER BY id DESC LIMIT 1), ''),
+		                          s.display_name) END,
+		       c.from_version_id, c.to_version_id,
 		       fv.revision, COALESCE(tv.revision, 0),
 		       c.detected_at, c.breaking, c.added, c.removed, c.modified, c.diff
 		FROM changes c
