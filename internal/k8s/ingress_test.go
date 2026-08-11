@@ -380,3 +380,78 @@ func keysOf(m map[string]store.Discovered) []string {
 	}
 	return out
 }
+
+// Случай с реальной эксплуатации: один и тот же Service «app» в нескольких
+// namespace. Имена в списке совпадали, но это разные сервисы на разных
+// адресах — схлопывать их нельзя. Слияние опирается на публичный адрес именно
+// поэтому: одинаковое имя ничего не значит.
+func TestSameServiceNameInSeveralNamespacesStaysSeparate(t *testing.T) {
+	body := ingressJSON(
+		rule("service1", "app", "app.service1", "/", "app", 8080, nil),
+		rule("service2", "app", "app.service2", "/", "app", 8080, nil),
+		rule("service3", "app", "app.service3", "/", "app", 8080, nil),
+		// Ещё и develop-контур того же сервиса — отдельный хост, отдельная запись.
+		rule("service1", "app-dev", "develop.app.service1", "/", "app-dev", 8080, nil),
+	)
+	c := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+	found := discover(t, c)
+	if len(found) != 4 {
+		t.Fatalf("записей %d, ожидалось четыре: %v", len(found), keysOf(found))
+	}
+	keys := map[string]bool{}
+	for _, item := range found {
+		if keys[item.PublicKey] {
+			t.Errorf("публичный адрес %q повторился — записи будут схлопнуты", item.PublicKey)
+		}
+		keys[item.PublicKey] = true
+		if item.DisplayName != "app" && item.DisplayName != "app-dev" {
+			t.Errorf("имя = %q", item.DisplayName)
+		}
+		// Различить их в списке можно только по хосту, поэтому он обязан быть.
+		if item.Host == "" {
+			t.Error("хост потерян — в колонке останется столбец одинаковых «app»")
+		}
+	}
+}
+
+// Глубина вложенности домена. Хост сравнивается целиком, поэтому уровней может
+// быть сколько угодно; общий «базовый домен» не угадывается — это было бы
+// гаданием, из-за которого develop-контур слился бы с рабочим.
+func TestPublicKeyComparesTheWholeHostWhateverItsDepth(t *testing.T) {
+	cases := []struct {
+		name    string
+		a, b    string
+		aPath   string
+		bPath   string
+		sameAPI bool
+	}{
+		{"поддомен глубже", "app.service1", "develop.app.service1", "/", "/", false},
+		{"пять уровней, разные", "a.b.c.d.internal", "x.b.c.d.internal", "/", "/", false},
+		{"пять уровней, те же", "a.b.c.d.internal", "a.b.c.d.internal", "/", "/", true},
+		{"общий хвост, разное начало", "app.service1", "app.service2", "/", "/", false},
+		{"регистр DNS не различает", "App.Service1", "app.service1", "/", "/", true},
+		{"завершающая точка — тот же FQDN", "app.service1.", "app.service1", "/", "/", true},
+		{"один хост, разные префиксы", "api.internal", "api.internal", "/orders", "/billing", false},
+		{"один хост, один префикс", "api.internal", "api.internal", "/orders", "/orders", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := ingressJSON(
+				rule("ns1", "one", c.a, c.aPath, "svc-one", 8080, nil),
+				rule("ns2", "two", c.b, c.bPath, "svc-two", 8080, nil),
+			)
+			cl := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+			keys := map[string]int{}
+			for _, item := range discover(t, cl) {
+				keys[item.PublicKey]++
+			}
+			merged := len(keys) == 1
+			if merged != c.sameAPI {
+				t.Errorf("%s vs %s: схлопнуты=%v, ожидалось %v (адреса: %v)",
+					c.a+c.aPath, c.b+c.bPath, merged, c.sameAPI, keys)
+			}
+		})
+	}
+}

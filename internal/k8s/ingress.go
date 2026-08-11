@@ -144,7 +144,16 @@ func (c *Client) Discover(ctx context.Context) ([]store.Discovered, error) {
 // Which of them is the real one cannot be decided here: it depends on which
 // already carries a specification and history, and this package does not see
 // the registry. So the grouping is reported and the store picks the survivor.
+// Сравнивается хост целиком, без разбора на уровни: «app.service1» и
+// «develop.app.service1» — разные адреса, сколько бы точек в них ни было, и
+// угадывать общий «базовый домен» было бы гаданием. Поэтому глубина
+// вложенности ни на что не влияет.
+//
+// Нормализуется только то, в чём DNS не различает: регистр и завершающая
+// точка. Без этого два Ingress на «App.Service1» и «app.service1» вели бы на
+// один сервис, а в реестре остались бы двумя записями.
 func publicKey(host, baseURL string) string {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	if host == "" {
 		return ""
 	}
