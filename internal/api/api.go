@@ -527,10 +527,24 @@ func intParam(r *http.Request, name string, def, max int) int {
 	return v
 }
 
+// staticCache задаёт правила кеширования для встроенных файлов.
+//
+// У вендоренного вьюера имя фиксировано, а содержимое меняется только вместе с
+// версией портала — его можно держать в кеше сутками.
+//
+// Всему остальному (страница, скрипт, стили) ставится no-cache. Это не «не
+// кешировать»: файл кладётся в кеш, но перед использованием браузер обязан
+// спросить, не изменился ли он, и почти всегда получит 304. Без этого
+// заголовка браузер кеширует по своему усмотрению — файлы отдаются с
+// Last-Modified и без явных указаний, — и после обновления портала человек
+// видит старый интерфейс, не понимая почему. Имён с хэшем здесь нет: сборки
+// фронтенда нет тоже, и заводить её ради одного файла не стоит.
 func staticCache(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/vendor/") {
 			w.Header().Set("Cache-Control", "public, max-age=86400")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		next.ServeHTTP(w, r)
 	})

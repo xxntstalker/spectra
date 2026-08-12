@@ -792,3 +792,27 @@ func schemaName(prefix, testName string) string {
 	sum.Write([]byte(testName))
 	return fmt.Sprintf("%s%s_%08x", prefix, ascii, sum.Sum32())
 }
+
+// Страница, скрипт и стили должны перепроверяться браузером при каждом заходе.
+//
+// Без заголовка браузер кеширует их по своему усмотрению — файлы отдаются с
+// Last-Modified и без явных указаний, — и после обновления портала человек
+// видит старый интерфейс. Проверено на живом стенде: обновлённый CSS лежал на
+// сервере, а в браузере оставался прежний.
+func TestStaticIsRevalidatedButVendorIsNot(t *testing.T) {
+	e := newEnv(t, nil)
+
+	for _, path := range []string{"/", "/index.html", "/app.js", "/style.css"} {
+		rec := e.do(t, "GET", path, "", false)
+		if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("%s: Cache-Control = %q, ожидался no-cache", path, got)
+		}
+	}
+
+	// У вендоренного вьюера содержимое меняется только вместе с версией
+	// портала, а весит он мегабайты — его держать в кеше можно и нужно.
+	rec := e.do(t, "GET", "/vendor/scalar.standalone.js", "", false)
+	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "max-age") {
+		t.Errorf("вьюер отдаётся без кеширования: %q", got)
+	}
+}

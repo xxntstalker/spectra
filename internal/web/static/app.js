@@ -362,8 +362,11 @@ function urlRow(svc) {
           : ''}
       </td>
       <td class="addr">
-        ${address ? esc(address) : '<span class="muted">—</span>'}
-        ${svc.backend ? `<span class="addr-backend" title="backend-Service в кластере">${esc(svc.backend)}</span>` : ''}
+        <span class="addr-public" title="Публичный адрес — по нему ходят потребители API">${
+          address ? esc(address) : '<span class="muted">—</span>'}</span>
+        ${svc.backend
+          ? `<span class="addr-internal" title="Адрес внутри кластера — по нему ходит Spectra">${esc(svc.backend)}</span>`
+          : ''}
       </td>
       <td class="owner-cell">${svc.owner?.team
         ? esc(svc.owner.team)
@@ -517,8 +520,10 @@ function serviceHeader(svc, tab) {
       </h1>
       <p class="svc-sub">
         ${esc(svc.title || '')}
-        ${svc.host ? `${svc.title ? ' · ' : ''}<code>${esc(svc.host)}</code>` : ''}
-        ${svc.baseUrl ? ` · <code>${esc(svc.baseUrl)}</code>` : ''}
+        ${svc.host ? `${svc.title ? ' · ' : ''}<code class="addr-public"
+          title="Публичный адрес">${esc(svc.host)}</code>` : ''}
+        ${svc.baseUrl ? ` · <code class="addr-internal"
+          title="Адрес внутри кластера — по нему идёт опрос">${esc(svc.baseUrl)}</code>` : ''}
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
