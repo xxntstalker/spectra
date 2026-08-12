@@ -11,35 +11,27 @@ import (
 // Reading is open to everyone on the network, but "everyone" should not be
 // handed a map of the cluster.
 //
-// Backend и namespace показываются всем — сознательное решение владельца
+// Адреса внутри кластера показываются всем — сознательное решение владельца
 // портала. Когда на одном публичном адресе висит несколько записей, различить
-// их без адреса backend невозможно, а сам этот адрес и так виден любому, у
-// кого есть доступ к кластеру. Скрывать его значило бы мешать тем, ради кого
-// портал сделан, не мешая никому больше.
+// их без адреса backend невозможно, а сам адрес и так виден любому, у кого
+// есть доступ к кластеру. Скрывать его значило бы мешать тем, ради кого портал
+// сделан, не мешая никому больше.
 //
-// Остальное по-прежнему скрыто: адрес опроса целиком, имя Ingress, ключ
-// записи, адреса спецификации и текст ошибки — они описывают, как ходить в
-// сервисы в обход того, что настроено на Ingress.
+// Скрытым остаётся то, что адресом не является: имя объекта Ingress, адреса
+// найденной спецификации и текст последней ошибки. Первое — деталь
+// конфигурации, второе и третье выдают, где именно портал искал и обо что
+// споткнулся, а посетителю ни то, ни другое не нужно.
 //
 // Redaction happens here rather than in the browser because /api/services is
 // public: hiding a field in JavaScript hides it from nobody.
 func redactService(s store.Service) store.Service {
-	s.BaseURL = ""
-	// The fallback address is whichever of the two BaseURL is not, so depending
-	// on SPECTRA_K8S_TARGET it is the in-cluster one. Blanked unconditionally
-	// rather than reasoned about per configuration — the public host is already
-	// published as Host, so nothing is lost.
-	s.FallbackURL = ""
-	s.UsingFallback = false
+	// Адреса не скрываются: ни backend, ни адрес опроса, ни запасной, ни ключ
+	// записи (он и есть backend с префиксом пути). Решение владельца портала —
+	// см. комментарий выше.
 	s.IngressName = ""
-	s.Key = ""
-	// PublicKey остаётся намеренно: это публичный хост с префиксом пути, тот
-	// же, что уже показан в Host. По нему страница помечает возможные дубли —
-	// а две записи на один адрес посетитель видит и без подсказки.
 	s.SpecURL = ""
 	s.SpecURLSource = ""
 	s.ManualSpecURL = ""
-	// Probe errors quote the addresses that were tried.
 	s.LastError = ""
 	// Owner deliberately stays: "кого спросить про этот API" is the question
 	// a visitor comes with, and a team name with a contact is not topology.

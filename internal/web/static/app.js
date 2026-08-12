@@ -522,8 +522,8 @@ function serviceHeader(svc, tab) {
         ${esc(svc.title || '')}
         ${svc.host ? `${svc.title ? ' · ' : ''}<code class="addr-public"
           title="Публичный адрес">${esc(svc.host)}</code>` : ''}
-        ${svc.baseUrl ? ` · <code class="addr-internal"
-          title="Адрес внутри кластера — по нему идёт опрос">${esc(svc.baseUrl)}</code>` : ''}
+        ${(svc.baseUrl || svc.backend) ? ` · <code class="addr-internal"
+          title="Адрес внутри кластера — по нему идёт опрос">${esc(svc.baseUrl || svc.backend)}</code>` : ''}
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
