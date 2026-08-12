@@ -165,9 +165,8 @@ func TestAnonymousSeesNoClusterInternals(t *testing.T) {
 	svc := body.Services[0]
 
 	for name, value := range map[string]string{
-		"baseUrl": svc.BaseURL, "backend": svc.Backend, "namespace": svc.Namespace,
-		"ingressName": svc.IngressName, "specUrl": svc.SpecURL, "key": svc.Key,
-		"lastError": svc.LastError,
+		"baseUrl": svc.BaseURL, "ingressName": svc.IngressName,
+		"specUrl": svc.SpecURL, "key": svc.Key, "lastError": svc.LastError,
 	} {
 		if value != "" {
 			t.Errorf("аноним видит %s = %q", name, value)
@@ -176,6 +175,11 @@ func TestAnonymousSeesNoClusterInternals(t *testing.T) {
 	// The public hostname is the address a consumer actually needs.
 	if svc.Host != "orders.example.com" {
 		t.Errorf("публичный хост скрыт от анонима: %q", svc.Host)
+	}
+	// Backend и namespace показываются намеренно: когда на одном публичном
+	// адресе несколько записей, различить их без backend невозможно.
+	if svc.Backend != "orders.shop:80" || svc.Namespace != "shop" {
+		t.Errorf("backend скрыт от анонима: backend=%q namespace=%q", svc.Backend, svc.Namespace)
 	}
 	// Freshness is how a reader judges whether to trust the specification.
 	if svc.LastCheckedAt == nil {

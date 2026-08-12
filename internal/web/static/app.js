@@ -126,16 +126,16 @@ function detailText(d) {
 
 const isAdmin = () => Boolean(state.overview?.admin);
 
-// Записи, которые смотрят на тот же публичный адрес.
-//
-// Совпадение — повод присмотреться, а не приговор: ingress-контроллер
-// направляет один адрес ровно в один backend, значит остальные записи, скорее
-// всего, остались от переезда. Но какая из них рабочая, порталу неоткуда
-// знать, поэтому он показывает подозрение, а решает человек.
 function duplicateCount() {
   return state.services.filter(s => duplicatesOf(s).length).length;
 }
 
+// Записи с одинаковым хостом И одинаковым префиксом пути — то есть те, между
+// которыми ingress-контроллеру пришлось бы выбирать. Разные префиксы на одном
+// хосте (/orders и /billing) — не дубли: они маршрутизируются по пути.
+//
+// Совпадение — повод присмотреться, а не приговор. Какая из записей рабочая,
+// порталу неоткуда знать: он показывает подозрение, решает человек.
 function duplicatesOf(svc) {
   if (!svc?.publicKey) return [];
   return state.services.filter(o => o.publicKey === svc.publicKey && o.id !== svc.id);
@@ -361,7 +361,10 @@ function urlRow(svc) {
           ? '<span class="badge dup" title="Тот же публичный адрес, что и у другой записи">возможный дубль</span>'
           : ''}
       </td>
-      <td class="addr">${address ? esc(address) : '<span class="muted">—</span>'}</td>
+      <td class="addr">
+        ${address ? esc(address) : '<span class="muted">—</span>'}
+        ${svc.backend ? `<span class="addr-backend" title="backend-Service в кластере">${esc(svc.backend)}</span>` : ''}
+      </td>
       <td class="owner-cell">${svc.owner?.team
         ? esc(svc.owner.team)
         : '<span class="muted">—</span>'}</td>

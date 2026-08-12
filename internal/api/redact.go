@@ -11,11 +11,15 @@ import (
 // Reading is open to everyone on the network, but "everyone" should not be
 // handed a map of the cluster.
 //
-// The internal address, the backend Service and its port, the namespace and
-// the Ingress name are operational details: together they describe how to
-// reach services directly, bypassing whatever the Ingress enforces. The public
-// hostname stays — that is the address a consumer of the API actually needs,
-// and it is the point of having a portal.
+// Backend и namespace показываются всем — сознательное решение владельца
+// портала. Когда на одном публичном адресе висит несколько записей, различить
+// их без адреса backend невозможно, а сам этот адрес и так виден любому, у
+// кого есть доступ к кластеру. Скрывать его значило бы мешать тем, ради кого
+// портал сделан, не мешая никому больше.
+//
+// Остальное по-прежнему скрыто: адрес опроса целиком, имя Ingress, ключ
+// записи, адреса спецификации и текст ошибки — они описывают, как ходить в
+// сервисы в обход того, что настроено на Ingress.
 //
 // Redaction happens here rather than in the browser because /api/services is
 // public: hiding a field in JavaScript hides it from nobody.
@@ -27,8 +31,6 @@ func redactService(s store.Service) store.Service {
 	// published as Host, so nothing is lost.
 	s.FallbackURL = ""
 	s.UsingFallback = false
-	s.Backend = ""
-	s.Namespace = ""
 	s.IngressName = ""
 	s.Key = ""
 	// PublicKey остаётся намеренно: это публичный хост с префиксом пути, тот

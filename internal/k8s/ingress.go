@@ -131,37 +131,41 @@ func (c *Client) Discover(ctx context.Context) ([]store.Discovered, error) {
 	return out, nil
 }
 
-// publicKey is what a consumer of the API sees: the hostname and the path
-// prefix, without the backend behind them.
+// publicKey — адрес, по которому маршрутизируется запрос: хост и префикс пути,
+// без backend за ними.
 //
-// The registry is keyed by the backend Service, which is right when one API has
-// several ways in. It is wrong in the other direction: several Ingresses in
-// different namespaces can declare the same host and path, each pointing at its
-// own backend — a migration between namespaces, a copy left behind, a
-// blue/green pair. The ingress controller routes such a host to exactly one of
-// them, so there is one API there, and the portal was listing it several times.
+// Реестр опознаёт сервис по backend-Service, и это верно, когда у одного API
+// несколько входов. Обратный случай — несколько Ingress с одним хостом и одним
+// путём, каждый на свой backend — снаружи неразличим, и такие записи помечаются
+// возможными дублями. Выбирать между ними портал не берётся.
 //
-// Which of them is the real one cannot be decided here: it depends on which
-// already carries a specification and history, and this package does not see
-// the registry. So the grouping is reported and the store picks the survivor.
-// Сравнивается хост целиком, без разбора на уровни: «app.service1» и
-// «develop.app.service1» — разные адреса, сколько бы точек в них ни было, и
-// угадывать общий «базовый домен» было бы гаданием. Поэтому глубина
-// вложенности ни на что не влияет.
-//
-// Нормализуется только то, в чём DNS не различает: регистр и завершающая
-// точка. Без этого два Ingress на «App.Service1» и «app.service1» вели бы на
-// один сервис, а в реестре остались бы двумя записями.
-func publicKey(host, baseURL string) string {
+// Хост сравнивается целиком, без разбора на уровни: «app.service1» и
+// «develop.app.service1» — разные адреса, сколько бы точек в них ни было, а
+// угадывать общий «базовый домен» значило бы слить develop-контур с рабочим.
+// Нормализуется только то, в чём не различает DNS: регистр и завершающая точка.
+func publicKey(host, ingressPath string) string {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	if host == "" {
 		return ""
 	}
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return host
+	return host + routePrefix(ingressPath)
+}
+
+// routePrefix — та часть пути, по которой ingress-контроллер выбирает backend.
+//
+// Считать её из адреса опроса нельзя, и это была ошибка. Там путь обнуляется
+// для правил с rewrite-target: backend за таким правилом префикса не ждёт, и
+// приписывать его к адресу неверно. Но для маршрутизации префикс как раз
+// значим — /orders/(.*) и /billing/(.*) ведут в разные сервисы, а после
+// обнуления оба выглядели как «корень одного хоста» и помечались дублями.
+//
+// Берётся буквальное начало пути, до первого символа регулярного выражения:
+// именно оно и различает правила.
+func routePrefix(path string) string {
+	if i := strings.IndexAny(path, "()[]*?+{|$"); i >= 0 {
+		path = path[:i]
 	}
-	return host + u.Path
+	return strings.TrimRight(path, "/")
 }
 
 func (c *Client) skip(ing ingress) bool {
@@ -249,9 +253,9 @@ func (c *Client) candidates(ing ingress) []candidate {
 					DisplayName: name,
 					BaseURL:     baseURL,
 					FallbackURL: fallbackURL,
-					// Публичный адрес: по нему в реестре схлопываются записи,
-					// которые снаружи неразличимы.
-					PublicKey: publicKey(rule.Host, baseURL),
+					// Публичный адрес: по нему помечаются записи, которые
+					// снаружи неразличимы.
+					PublicKey: publicKey(rule.Host, p.Path),
 					// Имя из аннотации — то, как команда назвала свой сервис;
 					// выведенное из имени Service уступит названию из спеки.
 					NameIsExplicit: explicit,

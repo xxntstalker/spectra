@@ -455,3 +455,69 @@ func TestPublicKeyComparesTheWholeHostWhateverItsDepth(t *testing.T) {
 		})
 	}
 }
+
+// Один хост, разные префиксы пути — это разные API, а не дубли: ingress
+// маршрутизирует их по пути. Ключ группировки считается из пути правила, а не
+// из адреса опроса: там префикс обнуляется для правил с rewrite-target, и
+// четыре сервиса на одном хосте выглядели как четыре копии одного.
+func TestRewriteTargetPathsDoNotLookLikeDuplicates(t *testing.T) {
+	body := ingressJSON(
+		rule("a", "orders", "api.example.com", "/orders/(.*)", "orders-svc", 80, nil),
+		rule("b", "billing", "api.example.com", "/billing/(.*)", "billing-svc", 80, nil),
+		rule("c", "stock", "api.example.com", "/stock(/|$)(.*)", "stock-svc", 80, nil),
+		rule("d", "users", "api.example.com", "/users", "users-svc", 80, nil),
+	)
+	c := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+	keys := map[string]string{}
+	for _, item := range discover(t, c) {
+		if prev, clash := keys[item.PublicKey]; clash {
+			t.Errorf("%s и %s получили один адрес %q — будут помечены дублями",
+				prev, item.DisplayName, item.PublicKey)
+		}
+		keys[item.PublicKey] = item.DisplayName
+	}
+	for _, want := range []string{
+		"api.example.com/orders", "api.example.com/billing",
+		"api.example.com/stock", "api.example.com/users",
+	} {
+		if _, ok := keys[want]; !ok {
+			t.Errorf("нет записи с адресом %q, есть: %v", want, keys)
+		}
+	}
+}
+
+// Настоящий дубль — совпадение и хоста, и префикса.
+func TestSamePrefixOnOneHostIsStillFlagged(t *testing.T) {
+	body := ingressJSON(
+		rule("a", "orders", "api.example.com", "/orders/(.*)", "old-orders", 80, nil),
+		rule("b", "orders", "api.example.com", "/orders/(.*)", "new-orders", 80, nil),
+	)
+	c := newClient(t, fakeAPIServer(t, body).URL, nil)
+
+	keys := map[string]int{}
+	for _, item := range discover(t, c) {
+		keys[item.PublicKey]++
+	}
+	if keys["api.example.com/orders"] != 2 {
+		t.Errorf("две записи на один префикс не сгруппированы: %v", keys)
+	}
+}
+
+func TestRoutePrefix(t *testing.T) {
+	for path, want := range map[string]string{
+		"/orders/(.*)":     "/orders",
+		"/orders(/|$)(.*)": "/orders",
+		"/orders/*":        "/orders",
+		"/orders/":         "/orders",
+		"/orders":          "/orders",
+		"/":                "",
+		"":                 "",
+		"/(.*)":            "",
+		"/api/v2/(.*)":     "/api/v2",
+	} {
+		if got := routePrefix(path); got != want {
+			t.Errorf("routePrefix(%q) = %q, ожидалось %q", path, got, want)
+		}
+	}
+}
