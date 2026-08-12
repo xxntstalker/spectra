@@ -529,6 +529,7 @@ function serviceHeader(svc, tab) {
           title="Публичный адрес">${esc(svc.host)}</code>` : ''}
         ${(svc.baseUrl || svc.backend) ? ` · <code class="addr-internal"
           title="Адрес внутри кластера — по нему идёт опрос">${esc(svc.baseUrl || svc.backend)}</code>` : ''}
+        ${svc.namespace ? ` · <code class="addr-ns" title="Namespace в кластере">ns: ${esc(svc.namespace)}</code>` : ''}
         ${svc.specUrl ? ` · спека: <code>${esc(svc.specUrl)}</code> · ${esc(SOURCE_LABEL[svc.specUrlSource] || '')}` : ''}
       </p>
       ${svc.lastError ? `<div class="error-box">${esc(svc.lastError)}</div>` : ''}
@@ -543,8 +544,6 @@ function serviceHeader(svc, tab) {
         <li>эндпоинтов: <b>${svc.endpointCount || 0}</b></li>
         <li>ревизий: <b>${svc.versionCount || 0}</b></li>
         <li>проверено: <b title="${esc(absolute(svc.lastCheckedAt))}">${esc(ago(svc.lastCheckedAt))}</b></li>
-        ${svc.namespace ? `<li>namespace: <b>${esc(svc.namespace)}</b></li>` : ''}
-        ${svc.backend ? `<li>backend: <b>${esc(svc.backend)}</b></li>` : ''}
       </ul>
       <div class="tabs">
         <a class="tab ${tab === 'spec' ? 'active' : ''}" href="${base}">Спецификация</a>
