@@ -368,6 +368,9 @@ function urlRow(svc) {
           ? `<span class="addr-internal" title="Адрес внутри кластера — по нему ходит Spectra">${esc(svc.backend)}</span>`
           : ''}
       </td>
+      <td class="ns-cell">${svc.namespace
+        ? esc(svc.namespace)
+        : '<span class="muted">—</span>'}</td>
       <td class="owner-cell">${svc.owner?.team
         ? esc(svc.owner.team)
         : '<span class="muted">—</span>'}</td>
@@ -416,10 +419,12 @@ function renderURLs() {
 
       ${visible.length ? [...groups.entries()].map(([name, list]) => `
         <h2 class="group">${esc(name)} <span class="muted">${list.length}</span></h2>
-        <table class="urls">
-          <thead><tr><th></th><th>Сервис</th><th>Адрес</th><th>Команда</th><th>Эндп.</th><th></th></tr></thead>
-          <tbody>${list.map(urlRow).join('')}</tbody>
-        </table>`).join('') : '<div class="empty">Ничего не найдено</div>'}
+        <div class="table-scroll">
+          <table class="urls">
+            <thead><tr><th></th><th>Сервис</th><th>Адрес</th><th>Namespace</th><th>Команда</th><th>Эндп.</th><th></th></tr></thead>
+            <tbody>${list.map(urlRow).join('')}</tbody>
+          </table>
+        </div>`).join('') : '<div class="empty">Ничего не найдено</div>'}
     </div>`;
 
   for (const button of document.querySelectorAll('[data-state]')) {

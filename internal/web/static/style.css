@@ -379,7 +379,10 @@ code.addr-internal { display: inline; }
 
 /* --- плоский список адресов --- */
 
-table.urls { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-bottom: 6px; }
+/* Таблица прокручивается внутри себя. Адреса — длинные неразрывные строки, и
+   без этого на узком окне вбок уезжала вся страница, включая шапку. */
+.table-scroll { overflow-x: auto; margin-bottom: 6px; }
+table.urls { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 table.urls th {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
@@ -413,3 +416,9 @@ table.urls td.num { text-align: right; color: var(--muted); width: 60px; }
 .owner.empty { color: var(--muted); }
 .form-section { margin: 18px 0 -4px; font-size: 13.5px; }
 table.urls td.owner-cell { color: var(--muted); font-size: 12.5px; }
+/* Namespace тем же цветом, что и внутренний адрес: это одна и та же
+   «внутрикластерная» половина строки, просто вынесенная, чтобы её можно было
+   просматривать глазами по колонке. */
+table.urls td.ns-cell {
+  font-family: var(--mono); font-size: 12px; color: var(--internal); white-space: nowrap;
+}
