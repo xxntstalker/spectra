@@ -106,49 +106,80 @@ spectra.io/owners: ivanov,petrov
 
 ## RabbitMQ — отложенное
 
-**Связи из кода (source = code).** Таблица `mq_declared` и интерфейс к ней уже
-есть, ручные отметки пишутся туда с `source = manual`. Связи из кода ложатся
-туда же, с `source = code`. Решено:
+**Контракты сообщений: AsyncAPI.** Для REST сервисы ведут OpenAPI, и Spectra
+его находит, хранит ревизии и показывает ломающие изменения. Для сообщений то
+же самое делает AsyncAPI — стандарт, а не свой формат: каналы (exchange и
+очереди с привязками AMQP), операции «отправляет / получает», схемы payload.
+Решено вести его, а не самописный список связей (первый вариант этого пункта
+предлагал `.spectra/messaging.yaml` — отказались: команды учили бы формат
+Spectra, а контракт сообщений в нём не помещался).
 
-1. **Источник правды — файл в репозитории сервиса**, `.spectra/messaging.yaml`,
-   а не ответ сканера напрямую. Файл проходит ревью в MR и версионируется
-   вместе с кодом.
+1. **Формат — AsyncAPI 3.0 с привязками `amqp`.** Чего стандарт не описывает —
+   способ чтения — идёт расширением `x-spectra-mode`
+   (`subscribe | schedule | get | manual`): это то, что снимок брокера не видит.
 
    ```yaml
-   service: documents-archiver
-   links:
-     - vhost: documents            # broker: prod — если брокеров несколько
-       queue: documents.notify
-       role: consume
-       mode: schedule              # subscribe | schedule | get | manual
-       note: CronJob, каждую ночь в 03:00
-     - vhost: documents
-       exchange: documents
-       role: publish
-       routingKeys: [document.archived]
+   asyncapi: 3.0.0
+   info: { title: documents-archiver, version: 1.4.2 }
+   channels:
+     signed:
+       address: documents.notify
+       bindings:
+         amqp: { is: queue, queue: { name: documents.notify, vhost: documents } }
+       messages:
+         documentSigned: { $ref: '#/components/messages/DocumentSigned' }
+   operations:
+     readSigned:
+       action: receive
+       channel: { $ref: '#/channels/signed' }
+       x-spectra-mode: schedule
+       description: CronJob, каждую ночь в 03:00
+   components:
+     messages:
+       DocumentSigned:
+         payload:
+           type: object
+           required: [documentId]
+           properties: { documentId: { type: string } }
    ```
 
-2. **Файл предлагает сканер в CI** (общий шаблон, `include`). Детерминированный
-   поиск по коду — `amqp091-go` (`Consume`, `Publish`), `RabbitMQ.Client` /
-   MassTransit (`BasicConsume`, `ReceiveEndpoint`), `php-amqplib`,
-   Laravel queue и Symfony Messenger в конфигах — плюс внутренняя LLM, которая
-   разрешает имена очередей из конфигов и env и определяет способ чтения
-   (CronJob → `schedule`). Результат сравнивается с файлом в репозитории;
-   расхождение — предупреждение в пайплайне и комментарий в MR, а не правка файла.
+2. **Где Spectra его берёт — как OpenAPI.**
+   - У HTTP-сервисов — по конвенциональным путям рядом с поиском спеки:
+     `/asyncapi.json`, `/asyncapi.yaml`, `/asyncapi/asyncapi.json` (так отдаёт
+     Saunter для .NET); ручной адрес — аннотацией `spectra.io/asyncapi-url`.
+   - У воркеров и CronJob, которым нечего отдавать по HTTP, — файл
+     `asyncapi.yaml` в корне репозитория, через API GitLab на ту версию, что
+     задеплоена (лейбл `app.kubernetes.io/version`). Нужны `SPECTRA_GITLAB_URL`
+     и токен только на чтение.
 
-3. **Spectra файл читает сама**, через API GitLab, на ту версию, что задеплоена
-   (лейбл `app.kubernetes.io/version`), и для каждого сервиса заменяет его
-   связи `source = code` целиком. Нужны `SPECTRA_GITLAB_URL` и токен только на
-   чтение. Писать в Spectra из 30 пайплайнов не стали: это токен на каждый
-   пайплайн, и правдой становилось бы то, что собрано, а не то, что задеплоено.
+3. **Что Spectra с ним делает.**
+   - Ревизии по хэшу нормализованного документа и дифф, как у спек. Ломающее:
+     удалён канал или операция, в сообщении удалено обязательное поле или
+     сменился тип, появилось обязательное поле в том, что сервис получает.
+   - Связи из операций пишет в `mq_declared` с отдельным источником (сейчас там
+     заготовлен `code` — переименовать в `asyncapi`) и для каждого сервиса
+     заменяет их целиком при новой ревизии.
+   - Просмотр — вендоренный `@asyncapi/react-component`, как Scalar для OpenAPI.
 
-4. **Начальное наполнение** — из аудита (`contracts.rabbitmq` в
-   `audit/inventory.json`): по нему генерируются первые файлы для всех
-   репозиториев одним MR на репозиторий.
+4. **CI-агент — помощник, а не источник правды.**
+   - Один раз генерирует первые `asyncapi.yaml` по коду и аудиту
+     (`contracts.rabbitmq` в `audit/inventory.json`), одним MR на репозиторий.
+   - Дальше в каждом MR: `asyncapi validate` и сверка с кодом. Код публикует в
+     exchange, которого нет в документе, или документ обещает очередь, которую
+     код не читает, — предупреждение и комментарий в MR, а не правка файла.
+     Поиск по коду: `amqp091-go`, `RabbitMQ.Client` / MassTransit,
+     `php-amqplib`, Laravel queue и Symfony Messenger в конфигах, плюс
+     внутренняя LLM — разрешить имена из конфигов и env, понять способ чтения
+     (CronJob → `schedule`).
 
-5. **Что показывает сверка.** «По коду читает по расписанию, в брокере не
-   видно» — норма, не проблема. «В брокере видно, в коде не заявлено» —
-   гигиена: незаявленная связь.
+5. **Три источника у каждой связи** — «видно в брокере», «по контракту»,
+   «вручную» — и сверка между ними. «По контракту читает по расписанию, в
+   брокере не видно» — норма. «В брокере видно, в контракте нет» — гигиена:
+   незаявленная связь.
+
+6. **Цена.** Документ надо вести, как Swagger, а генераторы AsyncAPI слабее,
+   чем OpenAPI: для .NET есть Saunter, для Go и PHP почти ничего — там документ
+   чаще пишут руками. Без агента на старте и проверки в CI документы устареют.
 
 **Kafka.** Та же модель: топики, consumer groups и их lag через Admin API,
 сервис — по `client.id` и `group.id`. Если есть Schema Registry — история схем
