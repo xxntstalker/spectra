@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"spectra/internal/rabbitmq"
+	"spectra/internal/store"
 )
 
 // Metrics are written by hand rather than through a client library.
@@ -115,10 +119,62 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		value("spectra_breaking_changes_total", "", breaking)
 	}
 
+	if len(s.cfg.RabbitMQ) > 0 {
+		s.mqMetrics(ctx, metric, value)
+	}
+
 	metric("spectra_poller_active", "Эта реплика держит блокировку опроса.", "gauge")
 	value("spectra_poller_active", "", boolValue(s.collector.IsPolling()))
 
 	writeMetrics(w, out.String())
+}
+
+// mqMetrics are the two things worth alerting on for the brokers: the
+// snapshot has stopped coming (the same trap as discovery — the page keeps
+// showing the last one), and how many problems each cluster has by kind.
+func (s *Server) mqMetrics(ctx context.Context, metric func(name, help, kind string), value func(name, labels string, v any)) {
+	states, err := s.store.ListMQStates(ctx)
+	if err != nil {
+		return
+	}
+	byCluster := map[string]store.MQState{}
+	for _, st := range states {
+		byCluster[st.Cluster] = st
+	}
+
+	metric("spectra_mq_last_success_timestamp_seconds",
+		"Время последнего успешного снимка топологии RabbitMQ.", "gauge")
+	for _, b := range s.cfg.RabbitMQ {
+		if st, ok := byCluster[b.Name]; ok && st.LastSuccessAt != nil {
+			value("spectra_mq_last_success_timestamp_seconds", `cluster=`+strconv.Quote(b.Name), st.LastSuccessAt.Unix())
+		}
+	}
+
+	metric("spectra_mq_problems", "Проблемы топологии RabbitMQ по видам на момент последнего снимка.", "gauge")
+	kinds := []string{rabbitmq.ProblemNoDLQ, rabbitmq.ProblemUnbound,
+		rabbitmq.ProblemAnonymous, rabbitmq.ProblemNoAccess, rabbitmq.ProblemShovel}
+	for _, b := range s.cfg.RabbitMQ {
+		st, ok := byCluster[b.Name]
+		if !ok || st.Snapshot == "" {
+			continue
+		}
+		var snap struct {
+			Problems []rabbitmq.Problem `json:"problems"`
+		}
+		if json.Unmarshal([]byte(st.Snapshot), &snap) != nil {
+			continue
+		}
+		counts := map[string]int{}
+		for _, p := range snap.Problems {
+			counts[p.Kind]++
+		}
+		// Every kind is printed, zeroes included: an alert on "> 0" needs the
+		// series to exist when everything is fine.
+		for _, kind := range kinds {
+			value("spectra_mq_problems",
+				`cluster=`+strconv.Quote(b.Name)+`,kind=`+strconv.Quote(kind), counts[kind])
+		}
+	}
 }
 
 func writeMetrics(w http.ResponseWriter, body string) {

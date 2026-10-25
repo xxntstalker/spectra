@@ -197,6 +197,11 @@ type Settings struct {
 	RetainVersions int           `json:"retainVersions"`
 	IgnoreServers  bool          `json:"ignoreServers"`
 	IgnoreFields   []string      `json:"ignoreFields"`
+	// MQPollInterval paces snapshots of the RabbitMQ brokers. Same order as
+	// the spec interval: topology changes on deploys, like contracts do, and
+	// noticing a lost consumer within minutes is monitoring's job, not the
+	// catalogue's.
+	MQPollInterval time.Duration `json:"mqPollInterval"`
 }
 
 // DefaultSettings are what a fresh install starts with.
@@ -211,6 +216,7 @@ func DefaultSettings() Settings {
 		RetainVersions: 100,
 		IgnoreServers:  true,
 		IgnoreFields:   nil,
+		MQPollInterval: time.Hour,
 	}
 }
 
@@ -266,6 +272,7 @@ func (s *Store) LoadSettings(ctx context.Context) (Settings, error) {
 	dur("probe_budget", &out.ProbeBudget)
 	durAllowZero("probe_delay", &out.ProbeDelay)
 	dur("max_backoff", &out.MaxBackoff)
+	dur("mq_poll_interval", &out.MQPollInterval)
 	num("concurrency", &out.Concurrency)
 	num("retain_versions", &out.RetainVersions)
 	if raw, ok := stored["ignore_servers"]; ok {
@@ -293,6 +300,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 		{"retain_versions", strconv.Itoa(v.RetainVersions)},
 		{"ignore_servers", strconv.FormatBool(v.IgnoreServers)},
 		{"ignore_fields", strings.Join(v.IgnoreFields, ",")},
+		{"mq_poll_interval", v.MQPollInterval.String()},
 	}
 	batch := &pgx.Batch{}
 	for _, p := range pairs {

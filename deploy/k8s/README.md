@@ -94,6 +94,8 @@ rules:
 | `SPECTRA_PROXY_ENABLED` | `false` | Try it out через портал |
 | `SPECTRA_STATIC_SERVICES` | — | адреса вне кластера, через запятую |
 | `SPECTRA_POLLER_ENABLED` | `true` | выключить, чтобы реплика только отдавала UI |
+| `SPECTRA_RABBITMQ_BROKERS` | — | `имя=адрес management API`, через запятую |
+| `SPECTRA_RABBITMQ_USER` / `SPECTRA_RABBITMQ_PASSWORD` | — | пользователь с тегом `monitoring`, держите в Secret |
 
 Всё остальное — интервал опроса, таймауты, ретенция, `ignoreFields` — лежит в
 базе и меняется на странице настроек, потому что страница настроек и

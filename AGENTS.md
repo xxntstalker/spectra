@@ -62,12 +62,17 @@ Kubernetes. Читает объекты `Ingress` во всех namespace (то�
 ```
 cmd/spectra          точка входа; флаг -health-check для HEALTHCHECK в образе
 internal/config      конфигурация из переменных окружения (config.go) + TLS (tls.go)
-internal/k8s         чтение Ingress, группировка, аннотации spectra.io/*
+internal/k8s         чтение Ingress, группировка, аннотации spectra.io/*;
+                     pods.go — поды по IP для RabbitMQ (право list pods необязательно)
 internal/discovery   поиск спеки у сервиса; manual.go — разбор ручного адреса
 internal/openapi     разбор Swagger 2.0 / OpenAPI 3.0/3.1, нормализация, sha256,
                      индекс операций, дифф, извлечение владельца
-internal/collector   опрос по расписанию, запись ревизий, запасной адрес
-internal/store       Postgres: миграции (001–010), реестр, ревизии, настройки, локи
+internal/rabbitmq    Management API: снимок топологии, действующие параметры
+                     очередей, проблемы, хэш и дифф для истории
+internal/collector   опрос по расписанию, запись ревизий, запасной адрес;
+                     rabbitmq.go — отдельный цикл снимков брокеров
+internal/store       Postgres: миграции (001–012), реестр, ревизии, настройки, локи;
+                     mq.go — снимки брокеров, история топологии, заявленные связи
 internal/api         HTTP API, метрики, прокси, сессии, редакция, отдача UI
 internal/web         go:embed статики + вендоренный вьюер Scalar
 demo/                отдельная программа: семь фейковых сервисов (7101–7107)
@@ -237,7 +242,12 @@ curl -s localhost:8080/metrics | grep spectra_services
 | `GET /api/services`, `/{id}`, `/{id}/spec` | `POST /api/services/{id}/probe` |
 | `GET /api/changes`, `/api/groups`, `/api/tags` | `POST /api/groups`, `DELETE /api/groups/{id}` |
 | `GET /` (UI и статика) | `GET/PUT /api/settings`, `POST /api/sync` |
-| | `/proxy/{id}/` |
+| `GET /api/mq`, `GET /api/mq/changes` | `/proxy/{id}/` |
+| | `POST /api/mq/refresh` — шлёт запросы брокеру |
+| | `PUT /api/mq/declared`, `DELETE /api/mq/declared/{id}` — только `source=manual` |
+
+`/api/mq` анониму не отдаёт учётку соединения и текст ошибки брокера
+(`internal/api/mq.go`, `redactSnapshot`); тест — `internal/api/mq_test.go`.
 
 **Метрики Prometheus** — имена и метки (`internal/api/metrics.go:35-119`):
 `spectra_up`, `spectra_services{state=ok|no_spec|unreachable|hidden|gone}`,
@@ -245,7 +255,9 @@ curl -s localhost:8080/metrics | grep spectra_services
 `spectra_services_without_owner`, `spectra_discovery_last_success_timestamp_seconds`,
 `spectra_discovery_last_failure_timestamp_seconds`,
 `spectra_oldest_successful_check_timestamp_seconds`, `spectra_spec_revisions_total`,
-`spectra_changes_total`, `spectra_breaking_changes_total`, `spectra_poller_active`.
+`spectra_changes_total`, `spectra_breaking_changes_total`, `spectra_poller_active`;
+при заданных брокерах — `spectra_mq_last_success_timestamp_seconds{cluster}` и
+`spectra_mq_problems{cluster,kind}` (каждый вид печатается, нули тоже).
 На них написаны алерты в `deploy/DEPLOY.md:289-295` и `README.md:235`; тест —
 `internal/api/api_test.go:691 TestMetricsExposeWhatYouWouldAlertOn`.
 

@@ -50,6 +50,14 @@ type Collector struct {
 	// would each keep their own connection pool, so nothing would ever be
 	// reused and every request would open a fresh connection.
 	transport *http.Transport
+
+	// mqNow queues an out-of-band snapshot of the brokers; mqPolling keeps
+	// two of them from running at once, for the same reason as sweeping.
+	mqNow     chan struct{}
+	mqPolling sync.Mutex
+	// podsWarned keeps a missing `list pods` permission to one log line
+	// rather than one every few minutes.
+	podsWarned atomic.Bool
 }
 
 func New(cfg *config.Config, st *store.Store, kube *k8s.Client, log *slog.Logger) *Collector {
@@ -69,6 +77,7 @@ func New(cfg *config.Config, st *store.Store, kube *k8s.Client, log *slog.Logger
 		log:       log,
 		trigger:   make(chan int64, 64),
 		syncNow:   make(chan struct{}, 1),
+		mqNow:     make(chan struct{}, 1),
 		transport: transport,
 	}
 }
@@ -128,6 +137,13 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) loop(ctx context.Context) {
 	c.syncStatic(ctx)
 	c.syncCluster(ctx)
+	// Brokers run on their own schedule and interval, so a spec sweep that
+	// spends minutes on a slow service does not hold their snapshot back.
+	// They start after the registry is filled, so the first snapshot can
+	// already link connections to services.
+	if len(c.cfg.RabbitMQ) > 0 {
+		go c.mqLoop(ctx)
+	}
 	c.PollDue(ctx)
 
 	settings, _ := c.store.LoadSettings(ctx)

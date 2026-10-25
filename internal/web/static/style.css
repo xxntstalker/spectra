@@ -15,6 +15,9 @@
   --new-fg: #1a56b8;
   --breaking-bg: #fdecea;
   --breaking-fg: #a32b1c;
+  /* «Стоит поправить, но ничего не сломано»: очередь без DLQ, соединение без имени. */
+  --warn-bg: #fdf0dc;
+  --warn-fg: #7a4f0a;
   /* Внутренний адрес: заметно иной, но не спорит со ссылками (--accent) и не
      читается как статус (--ok / --warn / --err). */
   --internal: #0f766e;
@@ -46,6 +49,8 @@
     --new-fg: #8db4ff;
     --breaking-bg: #3a201d;
     --breaking-fg: #ff9d90;
+    --warn-bg: #3a2f18;
+    --warn-fg: #ecc06a;
     --internal: #5eead4;
   }
 }
@@ -67,6 +72,8 @@
   --new-fg: #8db4ff;
   --breaking-bg: #3a201d;
   --breaking-fg: #ff9d90;
+  --warn-bg: #3a2f18;
+  --warn-fg: #ecc06a;
   --internal: #5eead4;
 }
 
@@ -421,3 +428,46 @@ table.urls td.num { text-align: right; color: var(--muted); width: 60px; }
 .owner.empty { color: var(--muted); }
 .form-section { margin: 18px 0 -4px; font-size: 13.5px; }
 table.urls td.owner-cell { color: var(--muted); font-size: 12.5px; }
+
+/* --- RabbitMQ --- */
+
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.warn-text { color: var(--warn-fg); }
+.badge.warn { background: var(--warn-bg); border-color: transparent; color: var(--warn-fg); font-weight: 600; }
+.badge.attention { background: var(--breaking-bg); border-color: transparent; color: var(--breaking-fg); font-weight: 600; }
+.badge.mq { background: var(--warn-bg); border-color: transparent; color: var(--warn-fg); font-weight: 600; }
+
+/* Подпись к vhost — счётчики, а не заголовок: без капслока и разрядки. */
+h2.group code { text-transform: none; letter-spacing: 0; font-size: 12px; }
+h2.group .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.mq-exchange .card-head { background: var(--panel-alt); border-bottom: 1px solid var(--border); }
+.mq-exchange .table-scroll { margin: 0; }
+.mq-kind { font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+/* Публикующие стоят в шапке справа: это вход в exchange, а строки ниже — выходы. */
+.mq-pubs { margin-left: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; }
+
+table.mq { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.mq th {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  color: var(--muted); font-size: 11.5px; font-weight: 600; text-align: left; white-space: nowrap;
+}
+table.mq td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.mq tr:last-child td { border-bottom: none; }
+table.mq .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.mq td.err { font-weight: 650; }
+
+/* Сервис у очереди. Цвет говорит, насколько ему верить, но не один он:
+   подсказка при наведении называет способ, а «не определён» написан словами. */
+.party {
+  display: inline-block; margin: 1px 0; padding: 1px 7px;
+  border-radius: 6px; background: var(--accent-soft); color: var(--text);
+  font-family: var(--mono); font-size: 12px; white-space: nowrap;
+}
+a.party:hover { text-decoration: none; filter: brightness(0.96); }
+.party.guess { background: var(--warn-bg); color: var(--warn-fg); }
+.party.none { background: var(--breaking-bg); color: var(--breaking-fg); }
+/* Заявлено, а не увидено: та же метка, но пунктиром — знание со слов. */
+.party.declared { background: transparent; border: 1px dashed var(--muted); padding: 0 6px; }
+
+.mq-neighbours { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.mq-neighbours .card { margin-bottom: 0; }

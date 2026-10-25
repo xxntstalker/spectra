@@ -14,6 +14,7 @@ package config
 import (
 	"crypto/x509"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -40,6 +41,23 @@ type Config struct {
 	// — not for a local trial, and not for the handful of services that live
 	// somewhere else.
 	StaticServices []string
+
+	// RabbitMQ lists the brokers whose topology the portal reads. Empty means
+	// the feature is off: nothing is polled and the page is not shown.
+	RabbitMQ []Broker
+}
+
+// Broker is one RabbitMQ cluster, reached through its management API.
+//
+// Credentials come from their own variables and never from the URL: an
+// address is printed in logs and lands in ConfigMaps, a password must not.
+type Broker struct {
+	// Name is how the cluster is called on screen and in metrics. It is part
+	// of every object's key, so renaming it starts that cluster's history over.
+	Name     string
+	URL      string
+	User     string
+	Password string
 }
 
 // Kubernetes describes where the service list comes from.
@@ -143,6 +161,12 @@ func Load() (*Config, error) {
 		StaticServices: envList("SPECTRA_STATIC_SERVICES", nil),
 	}
 
+	brokers, err := loadBrokers()
+	if err != nil {
+		return nil, err
+	}
+	c.RabbitMQ = brokers
+
 	// Сертификаты читаются на старте: неверный путь должен ронять запуск
 	// сразу, а не всплывать на первом опросе через час.
 	if c.HTTP.CABundle != "" {
@@ -186,6 +210,79 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// loadBrokers reads SPECTRA_RABBITMQ_BROKERS: "имя=адрес" через запятую,
+// например "prod=http://rabbit-prod:15672,stage=http://rabbit-stage:15672".
+//
+// Логин и пароль общие для всех брокеров (SPECTRA_RABBITMQ_USER,
+// SPECTRA_RABBITMQ_PASSWORD) и переопределяются для отдельного брокера
+// переменными SPECTRA_RABBITMQ_<ИМЯ>_USER / _PASSWORD, где имя записано
+// заглавными буквами, а «-» заменён на «_».
+func loadBrokers() ([]Broker, error) {
+	entries := envList("SPECTRA_RABBITMQ_BROKERS", nil)
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	user := env("SPECTRA_RABBITMQ_USER", "")
+	password := env("SPECTRA_RABBITMQ_PASSWORD", "")
+
+	seen := map[string]bool{}
+	out := make([]Broker, 0, len(entries))
+	for _, entry := range entries {
+		name, raw, ok := strings.Cut(entry, "=")
+		name, raw = strings.TrimSpace(name), strings.TrimSpace(raw)
+		if !ok || name == "" || raw == "" {
+			return nil, fmt.Errorf("SPECTRA_RABBITMQ_BROKERS: %q — ожидается имя=адрес, "+
+				"например prod=http://rabbit:15672", entry)
+		}
+		if !validBrokerName(name) {
+			return nil, fmt.Errorf("SPECTRA_RABBITMQ_BROKERS: имя %q — только строчные латинские буквы, "+
+				"цифры, «-» и «_», первой — буква или цифра", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("SPECTRA_RABBITMQ_BROKERS: брокер %q указан дважды", name)
+		}
+		seen[name] = true
+
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("SPECTRA_RABBITMQ_BROKERS: адрес брокера %q должен быть http:// или https:// "+
+				"с хостом management API, например http://rabbit:15672", name)
+		}
+		if u.User != nil {
+			return nil, fmt.Errorf("SPECTRA_RABBITMQ_BROKERS: в адресе брокера %q есть логин или пароль. "+
+				"Уберите их из адреса и задайте SPECTRA_RABBITMQ_USER / SPECTRA_RABBITMQ_PASSWORD — "+
+				"адрес попадает в логи и ConfigMap, пароль туда попадать не должен", name)
+		}
+
+		prefix := "SPECTRA_RABBITMQ_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_"
+		b := Broker{
+			Name:     name,
+			URL:      strings.TrimRight(u.String(), "/"),
+			User:     env(prefix+"USER", user),
+			Password: env(prefix+"PASSWORD", password),
+		}
+		if b.User == "" || b.Password == "" {
+			return nil, fmt.Errorf("для брокера %q не заданы логин и пароль: "+
+				"SPECTRA_RABBITMQ_USER и SPECTRA_RABBITMQ_PASSWORD (или %sUSER / %sPASSWORD)",
+				name, prefix, prefix)
+		}
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+func validBrokerName(name string) bool {
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case (r == '-' || r == '_') && i > 0:
+		default:
+			return false
+		}
+	}
+	return name != ""
 }
 
 // inCluster reports whether the process looks like a pod, so that discovery

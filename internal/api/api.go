@@ -66,6 +66,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.requireAdmin(s.putSettings))
 	mux.HandleFunc("POST /api/sync", s.requireAdmin(s.syncNow))
 
+	// RabbitMQ: reading the topology is public like the rest of the catalogue;
+	// asking for a fresh snapshot sends requests to the broker, so it is not.
+	mux.HandleFunc("GET /api/mq", s.mqTopology)
+	mux.HandleFunc("GET /api/mq/changes", s.mqChanges)
+	mux.HandleFunc("POST /api/mq/refresh", s.requireAdmin(s.mqRefresh))
+	mux.HandleFunc("PUT /api/mq/declared", s.requireAdmin(s.mqDeclare))
+	mux.HandleFunc("DELETE /api/mq/declared/{id}", s.requireAdmin(s.mqUndeclare))
+
 	// The proxy sends real requests to internal services from inside the
 	// cluster. Reading documentation is public; calling an API through the
 	// portal is not.
@@ -112,6 +120,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		"discoveryRuns": runs,
 		"pollInterval":  settings.PollInterval.String(),
 		"kubernetes":    s.cfg.Kubernetes.Enabled,
+		"rabbitmq":      len(s.cfg.RabbitMQ) > 0,
 		"proxyEnabled":  s.cfg.HTTP.ProxyEnabled,
 		"admin":         admin,
 		"adminEnabled":  s.cfg.Admin.User != "" && s.cfg.Admin.Password != "",
@@ -393,6 +402,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		RetainVersions int      `json:"retainVersions"`
 		IgnoreServers  bool     `json:"ignoreServers"`
 		IgnoreFields   []string `json:"ignoreFields"`
+		MQPollInterval string   `json:"mqPollInterval"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.fail(w, http.StatusBadRequest, err)
@@ -423,6 +433,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		{"probeBudget", body.ProbeBudget, &settings.ProbeBudget, false},
 		{"probeDelay", body.ProbeDelay, &settings.ProbeDelay, true},
 		{"maxBackoff", body.MaxBackoff, &settings.MaxBackoff, false},
+		{"mqPollInterval", body.MQPollInterval, &settings.MQPollInterval, false},
 	} {
 		if err := parse(item.name, item.raw, item.target, item.allowZero); err != nil {
 			s.fail(w, http.StatusBadRequest, err)
@@ -471,6 +482,7 @@ func settingsJSON(v store.Settings) map[string]any {
 		"retainVersions": v.RetainVersions,
 		"ignoreServers":  v.IgnoreServers,
 		"ignoreFields":   fields,
+		"mqPollInterval": v.MQPollInterval.String(),
 	}
 }
 

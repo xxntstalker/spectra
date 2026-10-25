@@ -94,6 +94,40 @@ namespace и перечислите их в `SPECTRA_K8S_NAMESPACES`.
 в `/var/run/secrets/kubernetes.io/serviceaccount`, адрес API-сервера приходит в
 `KUBERNETES_SERVICE_HOST`. Достаточно `serviceAccountName` в поде.
 
+### RabbitMQ (по желанию)
+
+Если нужен раздел «Сообщения», порталу нужен пользователь в каждом брокере —
+с тегом `monitoring` и правами в **каждом** vhost, но без права что-либо
+создавать, писать или читать из очередей:
+
+```bash
+rabbitmqctl add_user spectra '<пароль>'
+rabbitmqctl set_user_tags spectra monitoring
+# повторить для каждого vhost; новый vhost — новая строка, иначе он будет «без доступа»
+rabbitmqctl set_permissions -p / spectra '^$' '^$' '^$'
+rabbitmqctl set_permissions -p documents spectra '^$' '^$' '^$'
+```
+
+Адреса брокеров (management API, обычно порт 15672) — в
+`SPECTRA_RABBITMQ_BROKERS`, логин и пароль — в Secret:
+`SPECTRA_RABBITMQ_USER` / `SPECTRA_RABBITMQ_PASSWORD`.
+
+Публикующих брокер называет только при `management.rates_mode = detailed`.
+Включать ли его — решение владельцев брокера: детальная статистика стоит памяти
+и CPU самого RabbitMQ. Без неё потребители всё равно видны.
+
+**Необязательное право `list pods`.** Если клиенты не задают `connection_name`,
+портал может узнать сервис по IP пода. Для этого добавьте в ClusterRole:
+
+```yaml
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+```
+
+Без него такие соединения просто остаются «не определён», в лог пишется одно
+предупреждение.
+
 ---
 
 ## 3. Deployment
@@ -170,6 +204,8 @@ advisory-lock в Postgres. Без этого три реплики означа�
 | `SPECTRA_STATIC_SERVICES` | — | адреса вне кластера, через запятую |
 | `SPECTRA_POLLER_ENABLED` | `true` | `false` — реплика только отдаёт интерфейс |
 | `SPECTRA_USER_AGENT` | `spectra/2.0` | как Spectra представляется в логах ваших сервисов |
+| `SPECTRA_RABBITMQ_BROKERS` | — | `имя=адрес management API` через запятую; без неё раздела RabbitMQ нет |
+| `SPECTRA_RABBITMQ_USER` / `SPECTRA_RABBITMQ_PASSWORD` | — | общие для всех брокеров; `SPECTRA_RABBITMQ_<ИМЯ>_USER` / `_PASSWORD` — для одного |
 
 Интервал опроса, таймауты, ретенция и игнорируемые поля лежат в базе и меняются
 на странице настроек — их в окружении нет намеренно.
@@ -283,6 +319,8 @@ msg="cluster sync" found=42 new=42 gone=0
 | `spectra_oldest_successful_check_timestamp_seconds` | самая старая успешная проверка — насколько устарели данные в худшем случае |
 | `spectra_spec_revisions_total` | сохранённых ревизий: по ним видно, когда пора ужимать ретенцию |
 | `spectra_poller_active` | эта реплика держит блокировку опроса |
+| `spectra_mq_last_success_timestamp_seconds{cluster}` | когда последний раз удался снимок брокера |
+| `spectra_mq_problems{cluster,kind}` | проблемы топологии по видам: nodlq, unbound, anonymous, noaccess, shovel |
 
 Два алерта, которые я бы завёл в первую очередь:
 
@@ -293,6 +331,18 @@ time() - spectra_discovery_last_success_timestamp_seconds > 3 * 3600
 # Опрашивать перестала любая реплика
 sum(spectra_poller_active) == 0
 ```
+
+С RabbitMQ алерт нужен тот же: снимки перестали приходить, а страница при этом
+показывает последний. Снимок раз в час, поэтому порог — три часа:
+
+```
+time() - spectra_mq_last_success_timestamp_seconds > 3 * 3600
+```
+
+`spectra_mq_problems` — счётчик гигиены для дашборда (сколько очередей без
+DLQ, сколько соединений без имени), а не повод будить дежурного: Spectra
+смотрит на брокер раз в час и состояние «прямо сейчас» не отслеживает. Для этого
+есть мониторинг брокера.
 
 ---
 

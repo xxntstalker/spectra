@@ -21,6 +21,9 @@ func setEnv(t *testing.T, pairs map[string]string) {
 		"SPECTRA_USER_AGENT", "SPECTRA_ADMIN_USER", "SPECTRA_ADMIN_PASSWORD",
 		"SPECTRA_STATIC_SERVICES", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
 		"KUBERNETES_SERVICE_PORT_HTTPS",
+		"SPECTRA_RABBITMQ_BROKERS", "SPECTRA_RABBITMQ_USER", "SPECTRA_RABBITMQ_PASSWORD",
+		"SPECTRA_RABBITMQ_PROD_USER", "SPECTRA_RABBITMQ_PROD_PASSWORD",
+		"SPECTRA_RABBITMQ_STAGE_EU_USER", "SPECTRA_RABBITMQ_STAGE_EU_PASSWORD",
 	}
 	for _, k := range known {
 		t.Setenv(k, "")
@@ -254,4 +257,67 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+func TestRabbitMQIsOffUnlessListed(t *testing.T) {
+	setEnv(t, map[string]string{"SPECTRA_DATABASE_URL": validDSN})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RabbitMQ) != 0 {
+		t.Errorf("без SPECTRA_RABBITMQ_BROKERS брокеров быть не должно: %+v", cfg.RabbitMQ)
+	}
+}
+
+func TestBrokersShareCredentialsUnlessOverridden(t *testing.T) {
+	setEnv(t, map[string]string{
+		"SPECTRA_DATABASE_URL":               validDSN,
+		"SPECTRA_RABBITMQ_BROKERS":           "prod=http://rabbit-prod:15672/, stage-eu=https://rabbit-stage:15671",
+		"SPECTRA_RABBITMQ_USER":              "spectra",
+		"SPECTRA_RABBITMQ_PASSWORD":          "shared",
+		"SPECTRA_RABBITMQ_STAGE_EU_PASSWORD": "own",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.RabbitMQ) != 2 {
+		t.Fatalf("ожидалось два брокера: %+v", cfg.RabbitMQ)
+	}
+	prod, stage := cfg.RabbitMQ[0], cfg.RabbitMQ[1]
+	if prod.Name != "prod" || prod.URL != "http://rabbit-prod:15672" || prod.Password != "shared" {
+		t.Errorf("prod: %+v", prod)
+	}
+	if stage.Name != "stage-eu" || stage.User != "spectra" || stage.Password != "own" {
+		t.Errorf("stage-eu: пароль переопределяется по имени брокера: %+v", stage)
+	}
+}
+
+func TestBrokerConfigurationMistakes(t *testing.T) {
+	cases := map[string]map[string]string{
+		"пароль в адресе": {"SPECTRA_RABBITMQ_BROKERS": "prod=http://u:p@rabbit:15672",
+			"SPECTRA_RABBITMQ_USER": "u", "SPECTRA_RABBITMQ_PASSWORD": "p"},
+		"нет пароля": {"SPECTRA_RABBITMQ_BROKERS": "prod=http://rabbit:15672", "SPECTRA_RABBITMQ_USER": "u"},
+		"нет имени":  {"SPECTRA_RABBITMQ_BROKERS": "http://rabbit:15672", "SPECTRA_RABBITMQ_USER": "u", "SPECTRA_RABBITMQ_PASSWORD": "p"},
+		"amqp вместо http": {"SPECTRA_RABBITMQ_BROKERS": "prod=amqp://rabbit:5672",
+			"SPECTRA_RABBITMQ_USER": "u", "SPECTRA_RABBITMQ_PASSWORD": "p"},
+		"дубль": {"SPECTRA_RABBITMQ_BROKERS": "prod=http://a:15672,prod=http://b:15672",
+			"SPECTRA_RABBITMQ_USER": "u", "SPECTRA_RABBITMQ_PASSWORD": "p"},
+		"имя с пробелом": {"SPECTRA_RABBITMQ_BROKERS": "my prod=http://a:15672",
+			"SPECTRA_RABBITMQ_USER": "u", "SPECTRA_RABBITMQ_PASSWORD": "p"},
+	}
+	for name, env := range cases {
+		t.Run(name, func(t *testing.T) {
+			env["SPECTRA_DATABASE_URL"] = validDSN
+			setEnv(t, env)
+			_, err := Load()
+			if err == nil {
+				t.Fatal("ошибка конфигурации должна ронять старт")
+			}
+			if strings.Contains(err.Error(), "u:p@") {
+				t.Errorf("пароль попал в текст ошибки: %v", err)
+			}
+		})
+	}
 }
